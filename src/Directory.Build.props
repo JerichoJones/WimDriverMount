@@ -4,6 +4,12 @@
        regression restore exactly what the publish restores. Without it the two
        would keep rewriting packages.lock.json (the SDK's ILLink task, the win-x64
        section), and every build after a test run would be stamped -modified. -->
+  <!-- Build output and intermediate files go to the temp folder, never into the project:
+       they record the build machine's paths. -->
+  <PropertyGroup>
+    <BaseOutputPath>$([System.IO.Path]::GetTempPath())WimDriverMount-build\$(MSBuildProjectName)\bin\</BaseOutputPath>
+    <BaseIntermediateOutputPath>$([System.IO.Path]::GetTempPath())WimDriverMount-build\$(MSBuildProjectName)\obj\</BaseIntermediateOutputPath>
+  </PropertyGroup>
   <PropertyGroup>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <!-- Restore both, so an ARM64 build (build.ps1 -Runtime win-arm64)

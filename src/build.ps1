@@ -5,8 +5,8 @@ Builds the WimDrive prototype on an x64 Windows build machine, for x64 or ARM64.
 Restores pinned direct packages, generates a NuGet lock file, and publishes
 a self-contained Windows x64 (default) or ARM64 application, with that runtime's Dokan
 installer beside it, so both behave the same and an offline PC needs no download.
-The full console output is saved in a transcript in the project build-logs
-folder. The resulting package is a prototype, not an approved release.
+The full console output is saved in a transcript in the temp folder
+(WimDriverMount-build-logs), never in the project. The resulting package is a prototype, not an approved release.
 .PARAMETER OutputPath
 Destination for published files. Defaults to publish beside this script, or a new
 timestamped folder when the default folder is already in use.
@@ -70,7 +70,8 @@ try {
         }
     }
 
-    $logDirectory = Join-Path $PSScriptRoot 'build-logs'
+    # In the temp folder, never in the project: the log records the build machine's details.
+    $logDirectory = Join-Path ([IO.Path]::GetTempPath()) 'WimDriverMount-build-logs'
     New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
     $logPath = Join-Path $logDirectory ("build-{0}-{1}.txt" -f (Get-Date -Format 'yyyyMMdd-HHmmss'), [Guid]::NewGuid().ToString('N'))
     Start-Transcript -LiteralPath $logPath | Out-Null
