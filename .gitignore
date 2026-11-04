@@ -1,0 +1,6 @@
+bin/
+obj/
+publish*/
+build-logs/
+*.zip
+*.wim

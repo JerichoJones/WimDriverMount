@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net9.0": {
+      "LTRData.DiscUtils.Core": {
+        "type": "Direct",
+        "requested": "[1.0.89, 1.0.89]",
+        "resolved": "1.0.89",
+        "contentHash": "FqTBYiKuP4TYODFFGXLELiqx3Ibj00XN/SCsZuwTeP85XPPBrkQGZ+QIv4ROUyVz3dfJL7wY68m8GytSuT9Y7g==",
+        "dependencies": {
+          "LTRData.DiscUtils.Streams": "1.0.89"
+        }
+      },
+      "Microsoft.NET.ILLink.Tasks": {
+        "type": "Direct",
+        "requested": "[9.0.22, )",
+        "resolved": "9.0.22",
+        "contentHash": "S61AsICGqZii54jXMY56s6xvu3PcIe9VPeBxcTAWwNt5P21l2Arcy36XfATNvZAEqoAH7OfGNzng+aoXkqhsxQ=="
+      },
+      "LTRData.DiscUtils.Streams": {
+        "type": "Transitive",
+        "resolved": "1.0.89",
+        "contentHash": "AQXgoGm/HOMo8qfIYuvY1cdNYOJ8TYIjz3/YU3VySlv9PvLrT9F6gc5bNl9AQJ/XDiOmyLaSIhvOwke5czbV4g==",
+        "dependencies": {
+          "LTRData.Extensions": "1.0.23"
+        }
+      },
+      "LTRData.Extensions": {
+        "type": "Transitive",
+        "resolved": "1.0.23",
+        "contentHash": "K+Lb4/siT7+K50r4kndp5QaJLgupf5zE4qe8QxqwF0uSAiZtodsiFc3+i9IQpkGGMDwi83isG9qYA3JOJrO7UA=="
+      }
+    },
+    "net9.0/win-arm64": {},
+    "net9.0/win-x64": {}
+  }
+}

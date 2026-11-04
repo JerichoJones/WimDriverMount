@@ -1,0 +1,19 @@
+# Source is stored with LF. Without this, a tool that writes CRLF turns a
+# three-line change into a whole-file rewrite, which hides it from review
+# and misdirects every later git blame.
+*.cs      text eol=lf
+*.csproj  text eol=lf
+*.props   text eol=lf
+*.json    text eol=lf
+*.md      text eol=lf
+*.ps1     text eol=lf
+*.ansi    -text
+*.wim     binary
+*.msi     binary
+*.png     binary
+# Built into the program (--install writes them out), so a clone's own line-ending
+# setting must not change them: the same commit has to build the same bytes.
+*.txt      text eol=lf
+*.TXT      text eol=lf
+*.manifest text eol=lf
+*.ico      binary

@@ -1,0 +1,28 @@
+<Project>
+  <!-- The release is a single-file win-x64 publish (build.ps1). Saying
+       so here, for the program and the reader alike, makes a plain build or a
+       regression restore exactly what the publish restores. Without it the two
+       would keep rewriting packages.lock.json (the SDK's ILLink task, the win-x64
+       section), and every build after a test run would be stamped -modified. -->
+  <PropertyGroup>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!-- Restore both, so an ARM64 build (build.ps1 -Runtime win-arm64)
+         reads the same lock file instead of rewriting it. -->
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <EnableSingleFileAnalyzer>true</EnableSingleFileAnalyzer>
+  </PropertyGroup>
+  <!-- Windows only (Dokan, SetupAPI, ACLs). Saying so once avoids some 270
+       "only supported on Windows" warnings, which would hide the few that matter. -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.Versioning.SupportedOSPlatformAttribute">
+      <_Parameter1>windows</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DebugType>embedded</DebugType>
+    <PathMap>$(MSBuildThisFileDirectory)=C:\build\WimDrive\</PathMap>
+    <!-- PathMap does not cover Source Link's map, which would put local paths and
+         repository addresses in every binary, so Source Link is off. -->
+    <EnableSourceLink>false</EnableSourceLink>
+  </PropertyGroup>
+</Project>
