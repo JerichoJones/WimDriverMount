@@ -261,6 +261,57 @@ Three options, from cheapest to strongest:
 
 Get a file's SHA-256 with `Get-FileHash C:\Images\tools.wim` in PowerShell, or `certutil -hashfile C:\Images\tools.wim SHA256` in Command Prompt.
 
+### Signing in to an HTTPS server
+
+If the server asks for sign-in, the program says so (`HTTP 401`). There are three ways to
+sign in, and only to an `https://` WIM. The sign-in goes only to the server named in
+`--wim`: redirects are not followed, and a split WIM's other parts come from the same place.
+
+- `--wim-windows-signin`: sign in as a Windows account (Kerberos, or NTLM where Kerberos is
+  not available). The password is never sent in a form the server can read.
+- `--wim-token-file <path>`: send the token in the file as `Authorization: Bearer <token>`.
+  The file holds the token alone, on one line.
+- `--wim-client-cert <thumbprint>`: offer a client certificate from the certificate store.
+  Copy the thumbprint from the certificate's Details tab; spaces are ignored. It can be
+  combined with either of the other two.
+
+```powershell
+.\WimDriverMount.exe --wim https://images.corp.local/dell.wim --wim-windows-signin
+.\WimDriverMount.exe --wim https://images.corp.local/dell.wim --wim-token-file C:\Config\wim.token
+.\WimDriverMount.exe --wim https://images.corp.local/dell.wim --wim-client-cert 3B1F...
+```
+
+In a settings file these are `wim-windows-signin = true`, `wim-token-file = <path>` and
+`wim-client-cert = <thumbprint>`.
+
+**Which account signs in.** Mounting needs administrator rights, so the program runs as
+whoever approved the Windows prompt. That is usually you. If someone typed a different
+administrator's password at the prompt, the program runs as that administrator, and Windows
+sign-in and the certificate store are theirs. The program prints the account before it
+connects, for example `Signing in to images.corp.local as CONTOSO\admin (Windows sign-in).`
+
+**Why the token file is for administrators only.** A token is as good as a password
+to the server. If your own account could read the file, any program running as you could
+read it too, silently: a bad script, a browser download you ran, an editor extension. So the
+program uses the file only when no one but administrators and SYSTEM can read or change it.
+Put it in a folder of its own and run:
+
+```powershell
+.\WimDriverMount.exe --protect-config C:\Config\wim.token
+```
+
+That leaves the file and its folder to administrators and SYSTEM. It does not show the
+token. The token is never printed, logged or put on a command line: a background mount is
+given the file's path and reads the file itself.
+
+**Why `--preview-drivers` then asks for administrator rights.** The preview normally runs
+without them. With a token file it has to read a file only administrators can read, so it asks
+first and says why. The other way round, making the file readable by your account so the preview
+need not ask, would undo the protection above. A limit worth knowing: on the default Windows
+setting, a program already running as an administrator's ordinary half can sometimes get past
+the prompt without asking. So this fully protects standard user accounts and computers set to
+"Always notify". On other computers it keeps the token from programs that do not try that hard.
+
 ## Install, with a right-click Mount
 
 ```

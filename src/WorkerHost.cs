@@ -15,7 +15,7 @@ internal static class WorkerHost
     internal static async Task RunAsync(string wimPath, int imageIndex, char drive,
         NamedPipeServerStream server, Guid instance, WorkerProof proof, WorkerAuthorization authorization,
         WorkerRecoveryRecord prepared, Task authorizedGo, Action<string, CancellationToken> activate, CancellationToken lifetime, string? certificateSha256 = null, HttpsRangeStream.SourceIdentity? sourceIdentity = null,
-        Action<WorkerCompletionReceipt.Closure>? onClosure = null, string? wimSha256 = null, WaitHandle? stopSignal = null, bool allUsers = false, bool signedIn = false)
+        Action<WorkerCompletionReceipt.Closure>? onClosure = null, string? wimSha256 = null, WaitHandle? stopSignal = null, bool allUsers = false, bool signedIn = false, WimSignIn? signIn = null)
     {
         bool web = Uri.TryCreate(wimPath, UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp);
         if ((!web && !Path.IsPathFullyQualified(wimPath)) || imageIndex < 1 || drive is < 'D' or > 'Z')
@@ -72,7 +72,7 @@ internal static class WorkerHost
             {
                 stop.Token.ThrowIfCancellationRequested();
                 using Stream stream = web
-                    ? new HttpsRangeStream(uri!, stop.Token, () => stop.Cancel(), certificateSha256, sourceIdentity)
+                    ? new HttpsRangeStream(uri!, stop.Token, () => stop.Cancel(), certificateSha256, sourceIdentity, signIn: signIn)
                     : new ResilientFileSource(wimPath, stop.Token);
                 // Verified here, in the process that will serve the drive, and
                 // against its own stream. Checking in the parent would prove
@@ -83,7 +83,7 @@ internal static class WorkerHost
                 // by the set's GUID, part count and part number.
                 string firstName = web ? uri!.AbsoluteUri : wimPath;
                 var parts = SplitWim.OpenParts(stream, firstName, wimSha256 is not null, name => web
-                    ? new HttpsRangeStream(new Uri(name), stop.Token, () => stop.Cancel(), certificateSha256)
+                    ? new HttpsRangeStream(new Uri(name), stop.Token, () => stop.Cancel(), certificateSha256, signIn: signIn)
                     : new ResilientFileSource(name, stop.Token));
                 using var partsLifetime = new SplitWim.Lease(parts);
                 var verified = wimSha256 is null ? null : WimSourceVerification.Require(stream, wimSha256, wimPath, Console.Out, stop.Cancel);

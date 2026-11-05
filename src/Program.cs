@@ -292,7 +292,7 @@ internal static class Program
         "--wim", "--index", "--drive", "--test-loopback-cert-sha256", "--wim-cert-sha256",
         "--wim-sha256", "--test-mount", "--run", "--run-args", "--run-sha256", "--unmount", "--mount-config",
         "--protect-config", "--resume-worker-cleanup", "--inspect-driver-journal", "--inspect-legacy-driver-journal", "--log",
-        "--capture-drivers", "--compression",
+        "--capture-drivers", "--compression", "--wim-token-file", "--wim-client-cert",
     };
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -421,9 +421,11 @@ internal static class Program
             state.EventOperation = "worker";
             try
             {
+                // The worker reads the token file itself; only its path was passed.
+                using var signIn = WimSignIn.Open(worker.WindowsSignIn, worker.TokenFile, worker.ClientCertificate);
                 WorkerChild.RunAsync(worker.PipeName, worker.Wim, worker.Index, worker.Drive,
                     worker.ParentPid, worker.ParentCreated, worker.CertificateSha256, worker.SourceIdentity,
-                    closure => state.EventClosure = closure, worker.WimSha256, worker.AllUsers, worker.SignedIn).GetAwaiter().GetResult();
+                    closure => state.EventClosure = closure, worker.WimSha256, worker.AllUsers, worker.SignedIn, signIn).GetAwaiter().GetResult();
                 return state.EventClosure?.Dokan is WorkerCompletionReceipt.DokanStatus.Deferred or WorkerCompletionReceipt.DokanStatus.Failed or WorkerCompletionReceipt.DokanStatus.FailedRestart or WorkerCompletionReceipt.DokanStatus.FailedRestartInitiated ? 1 :
                     state.EventClosure?.Dokan == WorkerCompletionReceipt.DokanStatus.RestartRequired ? 3010 : 0;
             }
@@ -669,6 +671,12 @@ internal static class Program
             }
             // The preview reads the WIM and device inventory only; it needs no elevation or mount.
             if (!previewDrivers && !IsAdministrator()) return RequestElevation(args);
+            // A token file is readable by administrators only (the README says why).
+            if (previewDrivers && parsed.TokenFile is not null && !IsAdministrator())
+            {
+                Console.WriteLine(AsTyped("--preview-drivers with --wim-token-file asks for administrator rights: only administrators can read the token file."));
+                return RequestElevation(args);
+            }
             if (!whatIf && !previewDrivers) state.EventOperation = installDrivers ? "driver" : background ? "background-start" : "mount";
             path = web ? wimUri!.AbsoluteUri : Path.GetFullPath(path);
             if (whatIf)
@@ -688,14 +696,22 @@ internal static class Program
                         : $"Access: {SafeText.Path(mounter.Name)}{(fromMenu ? SignedInAlso(mounter) : "")}, SYSTEM and elevated administrators only. " +
                             (fromSettingsFile ? "Set all-users = true to let every account open it." : "Use --all-users to let every account open it."));
             if (web && wimUri!.Scheme == Uri.UriSchemeHttp) Console.Error.WriteLine("WARNING: HTTP does not protect or authenticate WIM data in transit.");
+            using var signIn = WimSignIn.Open(parsed.WindowsSignIn, parsed.TokenFile, parsed.ClientCertificate);
+            if (signIn is not null)
+            {
+                if (previewDrivers && signIn.TokenFile is not null)
+                    using (var self = System.Security.Principal.WindowsIdentity.GetCurrent())
+                        Console.WriteLine($"Preview running as {SafeText.Path(self.Name)}, with administrator rights, to read the token file.");
+                foreach (string line in signIn.Describe(wimUri!.Host)) Console.WriteLine(line);
+            }
             if (web && background && !whatIf)
             {
                 using var previewLifetime = new CancellationTokenSource();
-                using var previewStream = new HttpsRangeStream(wimUri!, previewLifetime.Token, () => previewLifetime.Cancel(), testCertSha256);
+                using var previewStream = new HttpsRangeStream(wimUri!, previewLifetime.Token, () => previewLifetime.Cancel(), testCertSha256, signIn: signIn);
                 // Every part is checked here, so a missing or mismatched part is
                 // reported before Dokan setup; the worker opens its own.
                 var previewParts = SplitWim.OpenParts(previewStream, path, wimSha256 is not null, name =>
-                    new HttpsRangeStream(new Uri(name), previewLifetime.Token, () => previewLifetime.Cancel(), testCertSha256));
+                    new HttpsRangeStream(new Uri(name), previewLifetime.Token, () => previewLifetime.Cancel(), testCertSha256, signIn: signIn));
                 using var previewPartsLifetime = new SplitWim.Lease(previewParts);
                 var previewWim = new WimFile(previewParts);
                 if (index > previewWim.ImageCount) throw new ArgumentException(NoSuchImage(previewWim.ImageCount, index));
@@ -704,7 +720,7 @@ internal static class Program
                 using var lifecycle = DokanLifecycle.Acquire();
                 DokanLifecycle.Prepare(keepDokan, () => DokanInstaller.EnsureInstalled(false, noInstallDokan, installerUrl,
                     result => state.SetupRestart |= result));
-                using var remoteResult = WorkerStartup.StartAsync(path, index, drive, CancellationToken.None, testCertSha256, previewStream.Identity, wimSha256, parsed.AllUsers, fromMenu).GetAwaiter().GetResult();
+                using var remoteResult = WorkerStartup.StartAsync(path, index, drive, CancellationToken.None, testCertSha256, previewStream.Identity, wimSha256, parsed.AllUsers, fromMenu, signIn).GetAwaiter().GetResult();
                 Console.WriteLine(remoteResult.Detail);
                 if (remoteResult.Ready) Console.WriteLine($"READY {mount}");
                 return remoteResult.Ready ? 0 : 1;
@@ -714,11 +730,11 @@ internal static class Program
             // Do not allow a writer to change the backing archive while the mount is alive.
             using var sourceLifetime = new CancellationTokenSource();
             using Stream stream = web
-                ? new HttpsRangeStream(wimUri!, sourceLifetime.Token, () => sourceLifetime.Cancel(), testCertSha256)
+                ? new HttpsRangeStream(wimUri!, sourceLifetime.Token, () => sourceLifetime.Cancel(), testCertSha256, signIn: signIn)
                 : new ResilientFileSource(path, sourceLifetime.Token);
             // A split WIM's other parts are opened beside the first, in place.
             var parts = SplitWim.OpenParts(stream, path, wimSha256 is not null, name => web
-                ? new HttpsRangeStream(new Uri(name), sourceLifetime.Token, () => sourceLifetime.Cancel(), testCertSha256)
+                ? new HttpsRangeStream(new Uri(name), sourceLifetime.Token, () => sourceLifetime.Cancel(), testCertSha256, signIn: signIn)
                 : new ResilientFileSource(name, sourceLifetime.Token));
             using var partsLifetime = new SplitWim.Lease(parts);
             // A background worker verifies its own stream before it mounts
@@ -1425,6 +1441,7 @@ Options:
   --inspect-legacy-driver-journal <ID>  The same, for a journal kept in ProgramData.
   --preview-drivers      Show the driver --install-drivers would choose for each device.
                          Reads the WIM only: no mount, Dokan, elevation or installation.
+                         With --wim-token-file it asks for administrator rights.
   --no-install-dokan     Do not install a missing Dokan prerequisite.
   --log <path>           Append this run's messages, with the time, to a text file in
                          an existing folder. A background mount keeps writing there,
@@ -1453,6 +1470,17 @@ Options:
                          first, which for a large one is the download that
                          mounting it was meant to avoid. Not for a split WIM,
                          which is several files.
+  --wim-windows-signin   Sign in to the HTTPS server with this Windows account
+                         (Kerberos, else NTLM). It is the account this program
+                         runs as, shown when it starts.
+  --wim-token-file <path>  Send the token in this file as "Authorization: Bearer".
+                         The file must be on a local disk and readable and
+                         changeable only by administrators (--protect-config
+                         makes it so). Not with --wim-windows-signin.
+  --wim-client-cert <thumbprint>  Offer this client certificate (from the
+                         account's certificate store, then the computer's). It needs a
+                         private key. Combines with either option above.
+                         Sign-in goes only to an https:// WIM's own server.
 
 Driver modes cannot be combined with --background.
 An INF that cannot be parsed blocks only devices whose IDs appear in it.

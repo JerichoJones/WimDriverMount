@@ -27,6 +27,7 @@ internal sealed class HttpsRangeStream : Stream, IWimSourceHealth
     private volatile bool failed;
     private readonly CancellationToken lifetime;
     private readonly Action onFailure;
+    private readonly bool signedIn;
     internal bool HasFailed => failed;
 
     internal SourceIdentity Identity => new(uri.AbsoluteUri, length, validator.Tag);
@@ -39,8 +40,9 @@ internal sealed class HttpsRangeStream : Stream, IWimSourceHealth
     }
 
     internal HttpsRangeStream(Uri uri, CancellationToken lifetime, Action onFailure, string? certificateSha256 = null, SourceIdentity? expected = null,
-        TimeSpan? testReadCeiling = null, TimeSpan? testBlockWindow = null)
+        TimeSpan? testReadCeiling = null, TimeSpan? testBlockWindow = null, WimSignIn? signIn = null)
     {
+        signedIn = signIn is not null;
         if ((uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp) || !string.IsNullOrEmpty(uri.UserInfo) ||
             !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment))
             throw new ArgumentException("The WIM URL must be HTTP or HTTPS without credentials, query, or fragment.");
@@ -76,6 +78,9 @@ internal sealed class HttpsRangeStream : Stream, IWimSourceHealth
             };
         }
         client = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+        // Credentials reach only this host: redirects are not followed, and a
+        // split WIM's parts are beside the first.
+        signIn?.Apply(uri, handler, client);
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, uri);
@@ -91,7 +96,7 @@ internal sealed class HttpsRangeStream : Stream, IWimSourceHealth
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
             deadline.CancelAfter(OperationTimeout);
             using var response = client.Send(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
-            var (serverLength, tag) = ValidateProbe(response);
+            var (serverLength, tag) = ValidateProbe(response, signedIn);
             if (expected is not null && (expected.Length != serverLength ||
                 !string.Equals(expected.StrongETag, tag.Tag, StringComparison.Ordinal)))
                 throw new InvalidDataException("Web WIM identity differs from the expected version.");
@@ -113,17 +118,28 @@ internal sealed class HttpsRangeStream : Stream, IWimSourceHealth
                 ? "The WIM server's certificate is not for the name in the URL, so nothing was read from it. Use the name the certificate was issued for."
                 : pinRefused
                 ? "The WIM server's certificate does not match the certificate pin you gave, so nothing was read from it. If the server's certificate was replaced, give the new certificate's SHA-256."
+                : signIn?.HasCertificate == true
+                ? $"Could not connect to the WIM server. If it requires a client certificate, check that it trusts {signIn.Thumbprint}."
                 : "Could not connect to the WIM server. Check the address, the network and, for HTTPS, the server certificate.");
         }
         catch { client.Dispose(); throw; }
     }
 
-    internal static (long Length, EntityTagHeaderValue Tag) ValidateProbe(HttpResponseMessage response)
+    // A refusal says whether sign-in was given, because the fix differs.
+    private static void ThrowIfDenied(HttpResponseMessage response, bool signedIn)
+    {
+        if (response.StatusCode == HttpStatusCode.Unauthorized)
+            throw new InvalidDataException(signedIn ? "The WIM server did not accept the sign-in (HTTP 401)."
+                : "The WIM server asks for sign-in (HTTP 401). See --wim-windows-signin, --wim-token-file and --wim-client-cert.");
+        if (response.StatusCode == HttpStatusCode.Forbidden)
+            throw new InvalidDataException(signedIn ? "The WIM server refused access for this sign-in (HTTP 403)." : "The WIM server refused access (HTTP 403).");
+    }
+
+    internal static (long Length, EntityTagHeaderValue Tag) ValidateProbe(HttpResponseMessage response, bool signedIn = false)
     {
             var range = response.Content.Headers.ContentRange;
             var tag = response.Headers.ETag;
-            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-                throw new InvalidDataException($"The WIM server denied access (HTTP {(int)response.StatusCode}). WIM Driver Mount does not support server sign-in.");
+            ThrowIfDenied(response, signedIn);
             if (response.StatusCode == HttpStatusCode.PreconditionFailed)
                 throw new InvalidDataException("The WIM server rejected the request conditions (HTTP 412). The WIM may have changed; do not reuse an earlier version identity.");
             if ((int)response.StatusCode is >= 300 and < 400)
@@ -229,6 +245,7 @@ internal sealed class HttpsRangeStream : Stream, IWimSourceHealth
         // settled, so a misconfigured server fails now instead of in a minute.
         if ((int)response.StatusCode is 408 or 429 or 502 or 503 or 504)
             throw new IOException($"The WIM server is temporarily unavailable (HTTP {(int)response.StatusCode}).");
+        ThrowIfDenied(response, signedIn); // A token that expires mid-mount says so, not "the WIM changed".
         var range = response.Content.Headers.ContentRange;
         if (response.StatusCode != HttpStatusCode.PartialContent || range?.Unit != "bytes" ||
             range.From != start || range.To != end || range.Length != length ||

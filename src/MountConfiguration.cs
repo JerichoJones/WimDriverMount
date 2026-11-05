@@ -38,13 +38,13 @@ internal static class MountConfiguration
     // existing file can say so out loud.
     private static readonly string[] Flags =
         ["whatif", "install-drivers", "setup-log", "no-install-dokan", "keep-dokan",
-         "remove-dokan", "preview-drivers", "background", "all-users", "evtlog"];
+         "remove-dokan", "preview-drivers", "background", "all-users", "evtlog", "wim-windows-signin"];
 
     // Options that take a value. The test-only options are deliberately absent,
     // and so is mount-config itself: a configuration cannot start another one.
     private static readonly string[] Valued =
         ["wim", "drive", "index", "get-dokan", "run", "run-args", "run-sha256",
-         "wim-cert-sha256", "wim-sha256", "log"];
+         "wim-cert-sha256", "wim-sha256", "log", "wim-token-file", "wim-client-cert"];
 
     // The file says what an elevated process should do, so TrustedFile
     // establishes that only administrators can change it before a word of it is

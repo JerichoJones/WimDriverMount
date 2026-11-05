@@ -8,7 +8,7 @@ internal static class WorkerChild
 {
     internal static async Task RunAsync(string startupPipe, string wim, int index, char drive,
         uint parentPid, ulong parentCreation, string? certificateSha256, HttpsRangeStream.SourceIdentity? sourceIdentity,
-        Action<WorkerCompletionReceipt.Closure>? onClosure = null, string? wimSha256 = null, bool allUsers = false, bool signedIn = false)
+        Action<WorkerCompletionReceipt.Closure>? onClosure = null, string? wimSha256 = null, bool allUsers = false, bool signedIn = false, WimSignIn? signIn = null)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         using var parent = WorkerProcessIdentity.Open(parentPid, parentCreation);
@@ -37,7 +37,7 @@ internal static class WorkerChild
             using var lifetime = new CancellationTokenSource();
             var go = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             Task host = WorkerHost.RunAsync(wim, index, drive, control, instance, proof, authorization, prepared, go.Task,
-                (mapping, cancellation) => Activate(startup, parent, id, mapping, secret, proof, cancellation), lifetime.Token, certificateSha256, sourceIdentity, onClosure, wimSha256, stopSignal, allUsers, signedIn);
+                (mapping, cancellation) => Activate(startup, parent, id, mapping, secret, proof, cancellation), lifetime.Token, certificateSha256, sourceIdentity, onClosure, wimSha256, stopSignal, allUsers, signedIn, signIn);
             try
             {
                 await Write(startup, parent, "ARMED|" + id, deadline.Token).ConfigureAwait(false);

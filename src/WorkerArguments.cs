@@ -15,7 +15,8 @@ using System.Text.Json;
 // interpreted generously.
 internal sealed record WorkerArguments(
     string PipeName, string Wim, int Index, char Drive, uint ParentPid, ulong ParentCreated,
-    string? CertificateSha256, string? WimSha256, HttpsRangeStream.SourceIdentity? SourceIdentity, bool AllUsers = false, bool SignedIn = false)
+    string? CertificateSha256, string? WimSha256, HttpsRangeStream.SourceIdentity? SourceIdentity, bool AllUsers = false, bool SignedIn = false,
+    bool WindowsSignIn = false, string? TokenFile = null, string? ClientCertificate = null)
 {
     private const int MaxIdentityLength = 2732;
 
@@ -25,8 +26,10 @@ internal sealed record WorkerArguments(
     // The parent only ever passes the pin as --wim-cert-sha256: the command line
     // has already folded --test-loopback-cert-sha256 into it and applied the
     // loopback rule (MountOptions), so the worker accepts the one key it is sent.
+    // Sign-in travels as the token file's path, never the token: the worker reads the file itself.
     private static readonly string[] Optional =
-        ["--source-identity", "--wim-cert-sha256", "--wim-sha256", "--all-users", "--signed-in-user"];
+        ["--source-identity", "--wim-cert-sha256", "--wim-sha256", "--all-users", "--signed-in-user",
+         "--wim-windows-signin", "--wim-token-file", "--wim-client-cert"];
 
     // Returns null when this is not a worker command line at all, so the caller
     // can go on to consider the others. Throws only when it is one and is wrong.
@@ -73,8 +76,15 @@ internal sealed record WorkerArguments(
         bool allUsers = values.TryGetValue("--all-users", out string? all) && (all == "1" ? true : throw new ArgumentException("Invalid all-users value."));
         bool signedIn = values.TryGetValue("--signed-in-user", out string? mine) && (mine == "1" ? true : throw new ArgumentException("Invalid signed-in-user value."));
 
+        bool windowsSignIn = values.TryGetValue("--wim-windows-signin", out string? windows) && (windows == "1" ? true : throw new ArgumentException("Invalid Windows sign-in value."));
+        string? tokenFile = values.TryGetValue("--wim-token-file", out string? file) ? file : null;
+        if (tokenFile is not null && !Path.IsPathFullyQualified(tokenFile)) throw new ArgumentException("Invalid token file path.");
+        string? clientCertificate = values.TryGetValue("--wim-client-cert", out string? thumbprint) ? thumbprint : null;
+        if (clientCertificate is not null && (clientCertificate.Length != 40 || !clientCertificate.All(Uri.IsHexDigit)))
+            throw new ArgumentException("Invalid client certificate thumbprint.");
+
         return new WorkerArguments(values["--startup-pipe"], values["--wim"], index, values["--drive"][0],
-            parentPid, parentCreated, pin, wimHash, identity, allUsers, signedIn);
+            parentPid, parentCreated, pin, wimHash, identity, allUsers, signedIn, windowsSignIn, tokenFile, clientCertificate);
     }
 
     private static bool IsSha256(string value) => value.Length == 64 && value.All(Uri.IsHexDigit);

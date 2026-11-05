@@ -49,7 +49,7 @@ internal static class WorkerStartup
             : Program.FromSettingsFile ? @"To see why, add log = C:\Logs\wim.log (any file in a folder that exists) to the settings file's [defaults] section and run it again."
             : @"To see why, run the mount again with --log C:\Logs\wim.log added (any file in a folder that exists; the background mount writes its reason there), or without --background.");
 
-    internal static async Task<Result> StartAsync(string wim, int index, char drive, CancellationToken cancellation, string? certificateSha256 = null, HttpsRangeStream.SourceIdentity? sourceIdentity = null, string? wimSha256 = null, bool allUsers = false, bool signedIn = false)
+    internal static async Task<Result> StartAsync(string wim, int index, char drive, CancellationToken cancellation, string? certificateSha256 = null, HttpsRangeStream.SourceIdentity? sourceIdentity = null, string? wimSha256 = null, bool allUsers = false, bool signedIn = false, WimSignIn? signIn = null)
     {
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
         bool web = Uri.TryCreate(wim, UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp);
@@ -75,6 +75,9 @@ internal static class WorkerStartup
         if (wimSha256 is not null) { arguments.Add("--wim-sha256"); arguments.Add(wimSha256); }
         if (allUsers) { arguments.Add("--all-users"); arguments.Add("1"); }
         if (signedIn) { arguments.Add("--signed-in-user"); arguments.Add("1"); }
+        if (signIn?.WindowsSignIn == true) { arguments.Add("--wim-windows-signin"); arguments.Add("1"); }
+        if (signIn?.TokenFile is { } tokenFile) { arguments.Add("--wim-token-file"); arguments.Add(tokenFile); }
+        if (signIn?.Thumbprint is { } thumbprint) { arguments.Add("--wim-client-cert"); arguments.Add(thumbprint); }
         // The background mount writes to the same --log file, and the event log only with --evtlog.
         if (Program.RequestedLog is { } log) { arguments.Add("--log"); arguments.Add(log); }
         if (Program.EventLog) arguments.Add("--evtlog");

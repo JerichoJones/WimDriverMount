@@ -14,7 +14,8 @@ internal sealed record MountOptions(
     bool WhatIf, bool InstallDrivers, bool SetupLog, bool NoInstallDokan, bool KeepDokan,
     bool PreviewDrivers, bool Background, string? TestMount,
     string? RunPath, string? RunArgs, string? RunSha256,
-    bool Web, Uri? WimUri, bool AllUsers = false)
+    bool Web, Uri? WimUri, bool AllUsers = false,
+    bool WindowsSignIn = false, string? TokenFile = null, string? ClientCertificate = null)
 {
     // notices carries the one message parsing produces. Pass TextWriter.Null to
     // check a command line without saying anything, as the settings-file
@@ -40,6 +41,8 @@ internal sealed record MountOptions(
         bool allUsers = false; // The drive is the mounting user's unless this says otherwise.
         string? testMount = null;
         string? runPath = null, runArgs = null, runSha256 = null;
+        bool windowsSignIn = false;
+        string? tokenFile = null, clientCertificate = null;
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (int i = 0; i < args.Length; i++)
         {
@@ -61,6 +64,7 @@ internal sealed record MountOptions(
             if (key == "--preview-drivers") { previewDrivers = true; continue; }
             if (key == "--background") { background = true; continue; }
             if (key == "--all-users") { allUsers = true; continue; }
+            if (key == "--wim-windows-signin") { windowsSignIn = true; continue; }
             if (key == "--evtlog") continue; // Taken by Program; accepted here so a settings file may say evtlog = true.
             // Its value is optional: alone (or "tested", as a settings file says it) it means the
             // tested Dokan release for this PC; otherwise the file, share or HTTPS URL given.
@@ -71,7 +75,7 @@ internal sealed record MountOptions(
                     ? DokanPackage.TestedUrl : DokanSource.ValidateUrl(source);
                 continue;
             }
-            if (key is not ("--wim" or "--index" or "--drive" or "--test-loopback-cert-sha256" or "--wim-cert-sha256" or "--wim-sha256" or "--test-mount" or "--run" or "--run-args" or "--run-sha256" or "--log"))
+            if (key is not ("--wim" or "--index" or "--drive" or "--test-loopback-cert-sha256" or "--wim-cert-sha256" or "--wim-sha256" or "--test-mount" or "--run" or "--run-args" or "--run-sha256" or "--log" or "--wim-token-file" or "--wim-client-cert"))
                 throw new ArgumentException($"{args[i]} is not an option this program knows.");
             if (i + 1 >= args.Length)
                 throw new ArgumentException(key switch
@@ -103,6 +107,9 @@ internal sealed record MountOptions(
                 case "--run": runPath = value; break;
                 case "--run-args": runArgs = value; break;
                 case "--run-sha256": runSha256 = value; break;
+                case "--wim-token-file": tokenFile = value; break;
+                // Windows shows a thumbprint in pairs, and certmgr's copy starts with an invisible mark.
+                case "--wim-client-cert": clientCertificate = string.Concat(value.Where(c => !char.IsWhiteSpace(c) && c != '\u200E')).ToUpperInvariant(); break;
                 case "--log":
                     // Taken by Program; checked here so a settings file's log = is a full path.
                     if (!Path.IsPathFullyQualified(value)) throw new ArgumentException(@"--log needs a full path, such as --log C:\Logs\wim.log.");
@@ -133,6 +140,17 @@ internal sealed record MountOptions(
             if (certificateSha256.Length != 64 || !certificateSha256.All(Uri.IsHexDigit))
                 throw new ArgumentException("A certificate pin is the 64-digit SHA-256 of the server certificate.");
         }
+        // Sign-in goes only to an HTTPS server, the one named in --wim.
+        string? signIn = windowsSignIn ? "--wim-windows-signin" : tokenFile is not null ? "--wim-token-file" : clientCertificate is not null ? "--wim-client-cert" : null;
+        if (signIn is not null && (!web || wimUri!.Scheme != Uri.UriSchemeHttps))
+            throw new ArgumentException($"{signIn} needs an https:// WIM address; sign-in is never sent over HTTP or to a file share.");
+        // Both use the Authorization header.
+        if (windowsSignIn && tokenFile is not null)
+            throw new ArgumentException("Give --wim-windows-signin or --wim-token-file, not both.");
+        if (tokenFile is not null && !Path.IsPathFullyQualified(tokenFile))
+            throw new ArgumentException(@"--wim-token-file needs a full path, such as --wim-token-file C:\Config\wim.token.");
+        if (clientCertificate is not null && (clientCertificate.Length != 40 || !clientCertificate.All(Uri.IsHexDigit)))
+            throw new ArgumentException("--wim-client-cert takes the certificate's 40-digit thumbprint, as Windows shows it.");
         if (wimSha256 is not null && (wimSha256.Length != 64 || !wimSha256.All(Uri.IsHexDigit)))
             throw new ArgumentException("--wim-sha256 takes a 64-digit SHA-256 of the whole WIM.");
         // Plain HTTP authenticates neither the server nor the data, so nothing
@@ -174,7 +192,7 @@ internal sealed record MountOptions(
         if (letter is not null) _ = ParseDriveLetter(letter);
         return new MountOptions(path, letter, index, installerUrl, certificateSha256, wimSha256, whatIf, installDrivers,
             setupLog, noInstallDokan, keepDokan, previewDrivers, background, testMount,
-            runPath, runArgs, runSha256, web, wimUri, allUsers);
+            runPath, runArgs, runSha256, web, wimUri, allUsers, windowsSignIn, tokenFile, clientCertificate);
     }
 
     // A device path does not reach a file. Opening \\.\pipe\x hands an elevated

@@ -71,7 +71,8 @@ internal static class TrustedFile
     // Opens the file for reading, having established that only administrators
     // can change it. The handle is returned still open and shared for reading
     // only, so it cannot be rewritten while it is being read.
-    internal static FileStream OpenInstructions(string path)
+    // kind names the file in messages: a "settings file" or a "token file".
+    internal static FileStream OpenInstructions(string path, string kind = "settings file")
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         SafeFileHandle handle = OpenFileW(path, GenericRead, ShareRead, IntPtr.Zero, OpenExisting,
@@ -81,7 +82,7 @@ internal static class TrustedFile
             int error = Marshal.GetLastWin32Error();
             handle.Dispose();
             // 2 is ERROR_FILE_NOT_FOUND, 3 ERROR_PATH_NOT_FOUND.
-            if (error is 2 or 3) throw new FileNotFoundException("No settings file at that path.", path);
+            if (error is 2 or 3) throw new FileNotFoundException($"No {kind} at that path.", path);
             if (error == 5) throw new UnauthorizedAccessException($"Access to {SafeText.Path(path)} is denied.");
             throw new Win32Exception(error, $"Cannot open {SafeText.Path(path)}.");
         }
@@ -93,9 +94,9 @@ internal static class TrustedFile
             // A reparse point means the real target, and its permissions, are
             // decided elsewhere and can be redirected after this check.
             if ((info.Attributes & AttributeReparsePoint) != 0)
-                throw new IOException($"{SafeText.Path(path)} is a link (a symbolic link or junction). Name the settings file's real path.");
+                throw new IOException($"{SafeText.Path(path)} is a link (a symbolic link or junction). Name the {kind}'s real path.");
             RequireLocalFixedDrive(file.SafeFileHandle, path);
-            RequireAdministratorsOnly(path, () => file.GetAccessControl(), "settings file", path);
+            RequireAdministratorsOnly(path, () => file.GetAccessControl(), kind, path);
             // Replacing the file only needs write access to the folder holding it.
             //
             // Only the immediate parent is checked, not every folder above it.
@@ -108,7 +109,7 @@ internal static class TrustedFile
             string? parent = Path.GetDirectoryName(Path.GetFullPath(path));
             if (parent is not null)
                 RequireAdministratorsOnly(parent, () => new DirectoryInfo(parent).GetAccessControl(
-                    AccessControlSections.Access | AccessControlSections.Owner), "folder holding the settings file", path);
+                    AccessControlSections.Access | AccessControlSections.Owner), "folder holding the " + kind, path);
             return file;
         }
         catch { file.Dispose(); throw; }
@@ -168,6 +169,15 @@ internal static class TrustedFile
             if (content.Length > 1024 * 1024) throw new IOException("This file is too large to be a settings file.");
             byte[] bytes = new byte[content.Length];
             content.ReadExactly(bytes);
+            // A sign-in token is protected the same way, and is never shown.
+            string text = System.Text.Encoding.UTF8.GetString(bytes);
+            if (WimSignIn.IsBearerToken(text.TrimStart('\uFEFF').Trim()))
+            {
+                Array.Clear(bytes);
+                output.WriteLine("This file holds a sign-in token, so its contents are not shown.");
+                output.WriteLine($"{SafeText.Path(fileReal)} and its folder can now be read and changed by administrators and SYSTEM only.");
+                return;
+            }
             output.WriteLine($"Settings file SHA-256: {Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))}");
             output.WriteLine("Review its contents before using it with --mount-config:");
             foreach (string line in System.Text.Encoding.UTF8.GetString(bytes).Split('\n'))
@@ -451,7 +461,29 @@ internal static class TrustedFile
         return null;
     }
 
+    // Rights that expose a file's contents. Reading attributes or permissions
+    // does not; executing does not either, but costs nothing to refuse.
+    private const FileSystemRights Reveal = FileSystemRights.ReadData | FileSystemRights.ExecuteFile |
+        unchecked((FileSystemRights)0x80000000) | (FileSystemRights)0x20000000 | (FileSystemRights)0x10000000; // GENERIC_READ, _EXECUTE, _ALL
 
+    // Who other than administrators, SYSTEM and TrustedInstaller can read this
+    // file, or null. The read twin of WhoElseCanChange, which must pass first:
+    // an untrusted owner could grant itself read whatever this says.
+    internal static string? WhoElseCanRead(FileSystemSecurity security)
+    {
+        AuthorizationRuleCollection rules;
+        try { rules = security.GetAccessRules(true, true, typeof(SecurityIdentifier)); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { return "accounts its permissions do not name clearly"; }
+        foreach (var entry in rules)
+        {
+            if (entry is not FileSystemAccessRule rule) return "accounts its permissions do not name clearly";
+            if (rule.AccessControlType != AccessControlType.Allow || (rule.PropagationFlags & PropagationFlags.InheritOnly) != 0 ||
+                (rule.FileSystemRights & Reveal) == 0) continue;
+            if (rule.IdentityReference is SecurityIdentifier sid && IsTrusted(sid)) continue;
+            return Describe(rule.IdentityReference);
+        }
+        return null;
+    }
 
     // Rights on a folder that let someone rename or delete what is inside it,
     // and so put another folder in place of one below.
@@ -537,8 +569,9 @@ internal static class TrustedFile
 
     // The fix is two commands, each printed on its own line so it can be copied alone.
     private static AdviceException Refuse(string what, string role, string why, string settingsFile) => new(
-        $"Refusing to act on the {role} {SafeText.Path(what)} because {why}. A settings file can install " +
-        "drivers and run programs with administrator rights, so only administrators may be able to change it.",
+        $"Refusing to act on the {role} {SafeText.Path(what)} because {why}. " + (role.EndsWith("token file", StringComparison.Ordinal)
+            ? "Only administrators may be able to change a sign-in token file."
+            : "A settings file can install drivers and run programs with administrator rights, so only administrators may be able to change it."),
         "If the file is alone in a folder with no other folders in it, run:",
         $"  .\\WimDriverMount.exe --protect-config {SafeText.Argument(settingsFile)}",
         "Otherwise move it to a new folder, such as C:\\Config, and run:",
