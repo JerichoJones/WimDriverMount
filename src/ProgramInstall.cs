@@ -90,17 +90,38 @@ internal static class ProgramInstall
             else CreateSafe(sub);
         }
         if (reinstall is not null) output.WriteLine(reinstall);
-        // Files an earlier version installed stay on the list, so --uninstall still removes them.
-        var listed = files.Select(f => f.Relative).ToList();
+        // Files an earlier version installed that this one does not ship (0.8.0's artwork, say).
+        // A Dokan installer stays: installing from a copy without one must not lose it.
+        var current = files.Select(f => f.Relative).ToHashSet(StringComparer.OrdinalIgnoreCase);
         string previous = Path.Combine(target, ManifestName);
-        if (File.Exists(previous) && new FileInfo(previous).Length <= 64 * 1024)
-            listed.AddRange(File.ReadAllLines(previous).Where(line => Allowed(line) && File.Exists(Path.Combine(target, line))));
-        listed = listed.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var stale = File.Exists(previous) && new FileInfo(previous).Length <= 64 * 1024
+            ? File.ReadAllLines(previous).Where(line => Allowed(line) && !current.Contains(line) && !DokanInstallers.Contains(line, StringComparer.OrdinalIgnoreCase) && File.Exists(Path.Combine(target, line)))
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+            : [];
         // Dokan's installer first, being the one part that can be refused; the
         // program last, so a copy that stops part way never leaves a new program
         // beside old notices; the list of what was installed after it.
         foreach (var file in files.OrderBy(f => f.Check is not null ? 0 : f.Relative == ProgramName ? 2 : 1))
             using (var input = file.Open()) CopyVerified(input, Path.Combine(target, file.Relative), file.Check);
+        // The old files go only once the folder is known to be safe, as --uninstall
+        // deletes; one that cannot be deleted stays on the list for --uninstall.
+        RequireSafeTree(target);
+        var kept = new List<string>();
+        foreach (string entry in stale)
+        {
+            try { File.Delete(Path.Combine(target, entry)); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                kept.Add(entry);
+                output.WriteLine($"WARNING: {SafeText.Path(Path.Combine(target, entry))}, from an earlier version, could not be removed ({SafeText.Message(ex.Message)}); --uninstall removes it later.");
+            }
+        }
+        foreach (string folder in Folders.Where(f => !current.Any(c => c.StartsWith(f + "\\", StringComparison.OrdinalIgnoreCase))))
+            DeleteIfEmpty(Path.Combine(target, folder));
+        // What stays from before (a Dokan installer, a file that could not be deleted) stays listed for --uninstall.
+        var listed = current.Concat(kept).Concat(File.Exists(previous) && new FileInfo(previous).Length <= 64 * 1024
+            ? File.ReadAllLines(previous).Where(line => Allowed(line) && DokanInstallers.Contains(line, StringComparer.OrdinalIgnoreCase) && File.Exists(Path.Combine(target, line)))
+            : []).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         using (var list = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(string.Join("\n", listed) + "\n")))
             CopyVerified(list, Path.Combine(target, ManifestName));
         RequireSafeTree(target);
