@@ -109,14 +109,8 @@ try {
     $bundledDokan = Join-Path $fullOutputPath $dokanMsiName
     Copy-VerifiedDokanMsi -Source $DokanMsiPath -Destination $bundledDokan -ExpectedHash $pinnedDokanHash
     Write-Host 'Verified the bundled Dokan MSI.'
-    $artworkOutput = Join-Path $fullOutputPath 'artwork'
-    New-Item -ItemType Directory -Path $artworkOutput -Force | Out-Null
-    foreach ($asset in @('wimdrive-icon.ico', 'wimdrive-icon.png', 'wimdrive-logo-v3.png')) {
-        Copy-Item -LiteralPath (Join-Path (Join-Path $sourceRoot 'artwork') $asset) -Destination $artworkOutput -Force
-    }
-    $noticeDirectory = Join-Path $fullOutputPath 'WimReader'
-    New-Item -ItemType Directory -Path $noticeDirectory -Force | Out-Null
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'WimReader\SOURCE-NOTICES.md') -Destination $noticeDirectory -Force
+    # The reader's notice ships with the other notices.
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'WimReader\SOURCE-NOTICES.md') -Destination (Join-Path $fullOutputPath 'licenses\WIMREADER-SOURCE-NOTICES.md') -Force
     Write-Host 'Build completed. Review the generated packages.lock.json and all dependency licenses before redistribution.'
     Write-Host ("Elapsed: {0}" -f ((Get-Date) - $scriptStart))
     Write-Host "Published application: $(Join-Path $fullOutputPath 'WimDriverMount.exe')"

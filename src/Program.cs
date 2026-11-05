@@ -1219,8 +1219,8 @@ internal static class Program
     // Each is used only if the window can hold it; otherwise the next one down, then text.
     private static readonly (string Resource, int Width, int Height)[] Splashes =
     [
-        ("WimDrive.SplashLarge", 77, 21),   // 17 rows by 75 columns
-        ("WimDrive.Splash", 69, 17),        // 13 rows by 67 columns
+        ("WimDriverMount.SplashLarge", 77, 21),   // 17 rows by 75 columns
+        ("WimDriverMount.Splash", 69, 17),        // 13 rows by 67 columns
     ];
 
     private static string NoSuchImage(int count, int index) => count <= 0 ? "This WIM contains no images, so there is nothing to mount."

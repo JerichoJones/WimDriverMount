@@ -22,6 +22,7 @@ internal static class ProgramInstall
     internal const string ProgramName = "WimDriverMount.exe";
     // What was installed, one relative path per line; --uninstall removes those and nothing else.
     internal const string ManifestName = "WimDriverMount.install";
+    // "artwork" and "WimReader": 0.8.0 installed files there; --uninstall still removes them.
     private static readonly string[] Folders = ["licenses", "artwork", "WimReader"];
     // The installers DokanInstaller looks for beside the program.
     private static readonly string[] DokanInstallers = ["Dokan_x64.msi", "Dokan_ARM64.msi"];

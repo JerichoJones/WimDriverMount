@@ -11,13 +11,13 @@
          one number names many different programs. build.ps1
          stamps SourceRevisionId with the commit, so the version option
          identifies the exact source a binary came from. -->
-    <Version>0.8.0</Version>
+    <Version>0.8.1</Version>
     <Authors>Jericho Jones</Authors>
     <!-- MIT: everything here is Jericho's own work or permissive. Solid-resource
          support was rewritten clean-room (WimReader/SOURCE-NOTICES.md); keep
          code derived from non-permissive sources off the read path. -->
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <ApplicationIcon>artwork\wimdrive-icon.ico</ApplicationIcon>
+    <ApplicationIcon>artwork\wimdrivermount-icon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- DOTNET_STARTUP_HOOKS can come from HKCU\Environment, which the unelevated
          half of the sign-in can set; ignore it. -->
@@ -30,11 +30,10 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Remove="WimReader/**/*.cs" />
-    <EmbeddedResource Include="artwork/wimdrive-splash.ansi" LogicalName="WimDrive.Splash" />
-    <EmbeddedResource Include="artwork/wimdrive-splash-large.ansi" LogicalName="WimDrive.SplashLarge" />
+    <EmbeddedResource Include="artwork/wimdrivermount-splash.ansi" LogicalName="WimDriverMount.Splash" />
+    <EmbeddedResource Include="artwork/wimdrivermount-splash-large.ansi" LogicalName="WimDriverMount.SplashLarge" />
     <!-- What the install command writes beside the program, carried inside it (ProgramInstall). -->
     <EmbeddedResource Include="licenses/*" LogicalName="Install/licenses/%(Filename)%(Extension)" />
-    <EmbeddedResource Include="artwork/wimdrive-icon.ico;artwork/wimdrive-icon.png;artwork/wimdrive-logo-v3.png" LogicalName="Install/artwork/%(Filename)%(Extension)" />
-    <EmbeddedResource Include="WimReader/SOURCE-NOTICES.md" LogicalName="Install/WimReader/SOURCE-NOTICES.md" />
+    <EmbeddedResource Include="WimReader/SOURCE-NOTICES.md" LogicalName="Install/licenses/WIMREADER-SOURCE-NOTICES.md" />
   </ItemGroup>
 </Project>
