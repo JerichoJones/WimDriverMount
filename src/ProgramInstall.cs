@@ -90,21 +90,27 @@ internal static class ProgramInstall
             else CreateSafe(sub);
         }
         if (reinstall is not null) output.WriteLine(reinstall);
-        // Files an earlier version installed that this one does not ship (0.8.0's artwork, say).
-        // A Dokan installer stays: installing from a copy without one must not lose it.
+        // What an earlier version listed. Its files this version does not ship (0.8.0's
+        // artwork, say) are removed below; a Dokan installer stays, as installing from a
+        // copy without one must not lose it.
         var current = files.Select(f => f.Relative).ToHashSet(StringComparer.OrdinalIgnoreCase);
         string previous = Path.Combine(target, ManifestName);
-        var stale = File.Exists(previous) && new FileInfo(previous).Length <= 64 * 1024
-            ? File.ReadAllLines(previous).Where(line => Allowed(line) && !current.Contains(line) && !DokanInstallers.Contains(line, StringComparer.OrdinalIgnoreCase) && File.Exists(Path.Combine(target, line)))
-                .Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+        var before = File.Exists(previous) && new FileInfo(previous).Length <= 64 * 1024
+            ? File.ReadAllLines(previous).Where(line => Allowed(line) && File.Exists(Path.Combine(target, line))).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
             : [];
+        var stale = before.Where(line => !current.Contains(line) && !DokanInstallers.Contains(line, StringComparer.OrdinalIgnoreCase)).ToList();
         // Dokan's installer first, being the one part that can be refused; the
         // program last, so a copy that stops part way never leaves a new program
-        // beside old notices; the list of what was installed after it.
-        foreach (var file in files.OrderBy(f => f.Check is not null ? 0 : f.Relative == ProgramName ? 2 : 1))
+        // beside old notices.
+        foreach (var file in files.Where(f => f.Check is not null))
+            using (var input = file.Open()) CopyVerified(input, Path.Combine(target, file.Relative), file.Check);
+        // Listed before the rest is copied: whatever stops part way, --uninstall still finds
+        // every file, new and old. Writing it also replaces a list another account could change.
+        WriteList(target, current.Concat(before));
+        foreach (var file in files.Where(f => f.Check is null).OrderBy(f => f.Relative == ProgramName))
             using (var input = file.Open()) CopyVerified(input, Path.Combine(target, file.Relative), file.Check);
         // The old files go only once the folder is known to be safe, as --uninstall
-        // deletes; one that cannot be deleted stays on the list for --uninstall.
+        // deletes; one that cannot be deleted stays on the list.
         RequireSafeTree(target);
         var kept = new List<string>();
         foreach (string entry in stale)
@@ -113,17 +119,14 @@ internal static class ProgramInstall
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 kept.Add(entry);
-                output.WriteLine($"WARNING: {SafeText.Path(Path.Combine(target, entry))}, from an earlier version, could not be removed ({SafeText.Message(ex.Message)}); --uninstall removes it later.");
+                output.WriteLine($"WARNING: {SafeText.Path(Path.Combine(target, entry))}, from an earlier version, could not be removed ({SafeText.Message(ex.Message)}). " +
+                    "It stays on the install list, so --uninstall can remove it once nothing holds it.");
             }
         }
+        // A folder still in use (a console's current folder, say) just stays.
         foreach (string folder in Folders.Where(f => !current.Any(c => c.StartsWith(f + "\\", StringComparison.OrdinalIgnoreCase))))
-            DeleteIfEmpty(Path.Combine(target, folder));
-        // What stays from before (a Dokan installer, a file that could not be deleted) stays listed for --uninstall.
-        var listed = current.Concat(kept).Concat(File.Exists(previous) && new FileInfo(previous).Length <= 64 * 1024
-            ? File.ReadAllLines(previous).Where(line => Allowed(line) && DokanInstallers.Contains(line, StringComparer.OrdinalIgnoreCase) && File.Exists(Path.Combine(target, line)))
-            : []).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        using (var list = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(string.Join("\n", listed) + "\n")))
-            CopyVerified(list, Path.Combine(target, ManifestName));
+            try { DeleteIfEmpty(Path.Combine(target, folder)); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        WriteList(target, current.Concat(kept).Concat(before.Where(line => DokanInstallers.Contains(line, StringComparer.OrdinalIgnoreCase))));
         RequireSafeTree(target);
         output.WriteLine($"Installed WIM Driver Mount {typeof(ProgramInstall).Assembly.GetName().Version?.ToString(3)} in {SafeText.Path(target)} ({files.Count} files, each checked after copying).");
         return 0;
@@ -328,10 +331,11 @@ internal static class ProgramInstall
     }
 
     // Only names --install itself writes: no folder above, no other folder, no stream.
+    // No trailing dot and no ~: Windows would match those to another name (WIMDRIVERMOUNT-MIT.txt. or an 8.3 name).
     internal static bool Allowed(string entry)
     {
         string[] parts = entry.Split('\\');
-        bool plain = parts.All(p => p.Length > 0 && p is not ("." or "..") && p.IndexOfAny([':', '/', '\0']) < 0 && p == p.Trim());
+        bool plain = parts.All(p => p.Length > 0 && p is not ("." or "..") && p.IndexOfAny([':', '/', '\0', '~']) < 0 && p == p.Trim() && !p.EndsWith('.'));
         return plain && (parts.Length == 1
             ? string.Equals(entry, ProgramName, StringComparison.OrdinalIgnoreCase) || DokanInstallers.Contains(entry, StringComparer.OrdinalIgnoreCase)
             : parts.Length == 2 && Folders.Contains(parts[0], StringComparer.OrdinalIgnoreCase));
@@ -446,6 +450,11 @@ internal static class ProgramInstall
         finally { try { File.Delete(temp); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { } }
     }
 
+    private static void WriteList(string target, IEnumerable<string> entries)
+    {
+        using var list = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(string.Join("\n", entries.Distinct(StringComparer.OrdinalIgnoreCase)) + "\n"));
+        CopyVerified(list, Path.Combine(target, ManifestName));
+    }
     private static void DeleteIfEmpty(string folder)
     {
         if (Directory.Exists(folder) && !Directory.EnumerateFileSystemEntries(folder).Any()) Directory.Delete(folder);
