@@ -817,6 +817,7 @@ internal static class Program
             // In a settings-file run, options are settings: "index", not "--index".
             string message = SafeText.Message(ex.Message);
             Console.Error.WriteLine($"WIM Driver Mount ERROR: {AsTyped(message)}");
+            if (ex is AdviceException advice) foreach (string line in advice.Lines) Console.Error.WriteLine(line);
             if (ex is ArgumentException && !fromSettingsFile) Console.Error.WriteLine(@"For help, run: .\WimDriverMount.exe --help");
             else Console.Error.WriteLine($"Stopped after {watch.Elapsed.TotalSeconds:0.0} s.");
             if (ex.InnerException is not null)

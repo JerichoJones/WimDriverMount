@@ -49,14 +49,19 @@ internal sealed partial class WimSignIn : IDisposable
     // Called before the client's first request.
     internal void Apply(Uri uri, HttpClientHandler handler, HttpClient client)
     {
-        // Only Negotiate (Kerberos, else NTLM), and only for this origin: Basic
-        // and Digest are never answered, so the password is never sent in a
+        // Only Negotiate (Kerberos, else NTLM) and plain NTLM (Jericho, 2026-11-05:
+        // NTLM-only servers such as IIS set that way), and only for this origin:
+        // Basic and Digest are never answered, so the password is never sent in a
         // form the server can read. Credentials go only after the server asks.
         if (WindowsSignIn)
+        {
+            var origin = new Uri(uri.GetLeftPart(UriPartial.Authority) + "/");
             handler.Credentials = new CredentialCache
             {
-                { new Uri(uri.GetLeftPart(UriPartial.Authority) + "/"), "Negotiate", CredentialCache.DefaultNetworkCredentials }
+                { origin, "Negotiate", CredentialCache.DefaultNetworkCredentials },
+                { origin, "NTLM", CredentialCache.DefaultNetworkCredentials },
             };
+        }
         if (certificate is not null)
         {
             handler.ClientCertificateOptions = ClientCertificateOption.Manual;
@@ -79,7 +84,7 @@ internal sealed partial class WimSignIn : IDisposable
                 $"from the {(machineStore ? "computer" : "current user")} store.";
     }
 
-    // RFC 6750's token form. Also tells --protect-config not to show the file.
+    // RFC 6750's token form.
     internal static bool IsBearerToken(string value) => TokenForm().IsMatch(value);
 
     [GeneratedRegex(@"\A[A-Za-z0-9\-._~+/]+=*\z")]
@@ -128,6 +133,7 @@ internal sealed partial class WimSignIn : IDisposable
                 DateTime now = DateTime.Now;
                 var usages = candidate.Extensions.OfType<X509EnhancedKeyUsageExtension>().FirstOrDefault()?.EnhancedKeyUsages;
                 string? problem = !candidate.HasPrivateKey ? "no private key"
+                    : !KeyReadable(candidate) ? "this account cannot use its private key"
                     : now > candidate.NotAfter ? "expired"
                     : now < candidate.NotBefore ? "not valid yet"
                     : usages is not null && !usages.Cast<System.Security.Cryptography.Oid>().Any(u => u.Value == ClientAuthentication) ? "not for client sign-in"
@@ -138,6 +144,18 @@ internal sealed partial class WimSignIn : IDisposable
             }
         }
         throw new InvalidOperationException($"No usable client certificate {thumbprint}: {why}.");
+    }
+
+    // A computer-store key is often for administrators only; an unelevated
+    // preview would otherwise fail the handshake with a misleading hint.
+    private static bool KeyReadable(X509Certificate2 certificate)
+    {
+        try
+        {
+            using IDisposable? key = (IDisposable?)certificate.GetRSAPrivateKey() ?? certificate.GetECDsaPrivateKey();
+            return key is not null;
+        }
+        catch (System.Security.Cryptography.CryptographicException) { return false; }
     }
 
     public void Dispose() => certificate?.Dispose();

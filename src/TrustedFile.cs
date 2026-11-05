@@ -169,18 +169,20 @@ internal static class TrustedFile
             if (content.Length > 1024 * 1024) throw new IOException("This file is too large to be a settings file.");
             byte[] bytes = new byte[content.Length];
             content.ReadExactly(bytes);
-            // A sign-in token is protected the same way, and is never shown.
-            string text = System.Text.Encoding.UTF8.GetString(bytes);
-            if (WimSignIn.IsBearerToken(text.TrimStart('\uFEFF').Trim()))
+            string[] lines = System.Text.Encoding.UTF8.GetString(bytes).Split('\n');
+            // A sign-in token file is protected the same way and must never be shown,
+            // even pasted with "Bearer " or a second line. Only a file with a
+            // [section], as every settings file has, is shown.
+            if (!lines.Any(line => line.TrimStart('\uFEFF', ' ', '\t').StartsWith('[')))
             {
                 Array.Clear(bytes);
-                output.WriteLine("This file holds a sign-in token, so its contents are not shown.");
+                output.WriteLine("This file has no [section], so it is not a settings file: it may hold a sign-in token, and its contents are not shown.");
                 output.WriteLine($"{SafeText.Path(fileReal)} and its folder can now be read and changed by administrators and SYSTEM only.");
                 return;
             }
             output.WriteLine($"Settings file SHA-256: {Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))}");
             output.WriteLine("Review its contents before using it with --mount-config:");
-            foreach (string line in System.Text.Encoding.UTF8.GetString(bytes).Split('\n'))
+            foreach (string line in lines)
                 output.WriteLine("  | " + SafeText.Path(line.TrimEnd('\r')));
         }
         output.WriteLine($"{SafeText.Path(fileReal)} and its folder are now writable by administrators and SYSTEM only.");
