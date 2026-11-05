@@ -554,7 +554,7 @@ program, to end it, and the mount closes after it. An interrupted driver install
 ## Build
 
 You need a Windows PC with an x64 processor, the
-[.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0), and internet access (the build
+[.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0), and internet access (the build
 downloads its NuGet packages). An x64 PC builds for x64 and for ARM64 PCs alike.
 
 1. Download Dokan's installer from its

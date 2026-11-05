@@ -5,10 +5,12 @@
        would keep rewriting packages.lock.json (the SDK's ILLink task, the win-x64
        section), and every build after a test run would be stamped -modified. -->
   <!-- Build output and intermediate files go to the temp folder, never into the project:
-       they record the build machine's paths. -->
+       they record the build machine's paths. build.ps1 sets WimDriverMountBuildKind=release, so a
+       release build never shares files with an ordinary build of the same project. -->
   <PropertyGroup>
-    <BaseOutputPath>$([System.IO.Path]::GetTempPath())WimDriverMount-build\$(MSBuildProjectName)\bin\</BaseOutputPath>
-    <BaseIntermediateOutputPath>$([System.IO.Path]::GetTempPath())WimDriverMount-build\$(MSBuildProjectName)\obj\</BaseIntermediateOutputPath>
+    <WimDriverMountBuildKind Condition="'$(WimDriverMountBuildKind)' == ''">dev</WimDriverMountBuildKind>
+    <BaseOutputPath>$([System.IO.Path]::GetTempPath())WimDriverMount-build\$(WimDriverMountBuildKind)\$(MSBuildProjectName)\bin\</BaseOutputPath>
+    <BaseIntermediateOutputPath>$([System.IO.Path]::GetTempPath())WimDriverMount-build\$(WimDriverMountBuildKind)\$(MSBuildProjectName)\obj\</BaseIntermediateOutputPath>
   </PropertyGroup>
   <PropertyGroup>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>

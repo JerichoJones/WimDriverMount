@@ -83,7 +83,7 @@ try {
 
     # No --runtime here: it would replace the RuntimeIdentifiers in Directory.Build.props
     # and drop the other architecture from packages.lock.json.
-    & $dotnet.Source restore $project --use-lock-file -p:SelfContained=true -p:PublishSingleFile=true
+    & $dotnet.Source restore $project --use-lock-file -p:SelfContained=true -p:PublishSingleFile=true -p:WimDriverMountBuildKind=release
     if ($LASTEXITCODE -ne 0) { throw "dotnet restore failed with exit code $LASTEXITCODE." }
 
     # Stamp the commit into the version, so a binary in the field can be traced
@@ -102,7 +102,7 @@ try {
     if ($revision) { Write-Host "Source revision: $revision" } else { Write-Host 'Source revision: unknown (not a git checkout)' }
     $revisionArgument = if ($revision) { "-p:SourceRevisionId=$revision" } else { '-p:SourceRevisionId=unknown' }
 
-    & $dotnet.Source publish $project --configuration Release --runtime $Runtime --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true $revisionArgument --no-restore --output $fullOutputPath
+    & $dotnet.Source publish $project --configuration Release --runtime $Runtime --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:WimDriverMountBuildKind=release $revisionArgument --no-restore --output $fullOutputPath
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE." }
 
     Copy-Item -LiteralPath $licensePath -Destination $fullOutputPath -Recurse -Force
