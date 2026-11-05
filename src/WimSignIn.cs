@@ -73,8 +73,11 @@ internal sealed partial class WimSignIn : IDisposable
     // What the operator is told before the first request. The account matters:
     // the elevated process may be another administrator's, whose Windows sign-in
     // and certificate store are the ones used.
-    internal IEnumerable<string> Describe(string host)
+    internal IEnumerable<string> Describe(Uri uri)
     {
+        // A look-alike name (a Cyrillic "о" for "o") reads as the real one, so the
+        // name as DNS sees it is shown beside it; that is what the operator checks.
+        string host = uri.IdnHost == uri.Host ? uri.Host : $"{uri.Host} ({uri.IdnHost})";
         if (WindowsSignIn)
             using (var self = WindowsIdentity.GetCurrent())
                 yield return $"Signing in to {SafeText.Path(host)} as {SafeText.Path(self.Name)} (Windows sign-in).";

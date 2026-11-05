@@ -702,7 +702,7 @@ internal static class Program
                 if (previewDrivers && signIn.TokenFile is not null)
                     using (var self = System.Security.Principal.WindowsIdentity.GetCurrent())
                         Console.WriteLine($"Preview running as {SafeText.Path(self.Name)}, with administrator rights, to read the token file.");
-                foreach (string line in signIn.Describe(wimUri!.Host)) Console.WriteLine(line);
+                foreach (string line in signIn.Describe(wimUri!)) Console.WriteLine(line);
             }
             if (web && background && !whatIf)
             {
