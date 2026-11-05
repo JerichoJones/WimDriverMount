@@ -121,6 +121,10 @@ internal static class MountConfiguration
                 throw Error(number, $"{SafeText.Quote(key)} is not a setting. The settings are: {string.Join(", ", Valued.Concat(Flags))}");
             if (inDefaults && key is "wim" or "drive")
                 throw Error(number, $"{key} belongs to a single mount and cannot be a default");
+            // A default would send one server's sign-in to every mount's server,
+            // and a mount cannot take it away (Jericho, 2026-11-05).
+            if (inDefaults && key is "wim-windows-signin" or "wim-token-file" or "wim-client-cert")
+                throw Error(number, $"{key} is a sign-in for one server, so it goes in that mount's own section, not [defaults]");
             if (!inDefaults && key is "log" or "evtlog")
                 throw Error(number, $"{key} applies to the whole run, so it goes in [defaults]");
             if (!current.TryAdd(key, value)) throw Error(number, $"{key} is set twice in the same section");

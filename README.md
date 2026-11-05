@@ -268,7 +268,9 @@ sign in, and only to an `https://` WIM. The sign-in goes only to the server name
 `--wim`: redirects are not followed, and a split WIM's other parts come from the same place.
 
 - `--wim-windows-signin`: sign in as a Windows account (Kerberos, or NTLM where Kerberos is
-  not available). The password is never sent in a form the server can read.
+  not available). The password itself is never sent. With NTLM, though, the server gets
+  enough to try to guess a weak password offline, or to pass the sign-in on to another
+  server. Use it only with a server you trust, and check the name in `--wim`.
 - `--wim-token-file <path>`: send the token in the file as `Authorization: Bearer <token>`.
   The file holds the token alone, on one line.
 - `--wim-client-cert <thumbprint>`: offer a client certificate from the certificate store.
@@ -282,7 +284,15 @@ sign in, and only to an `https://` WIM. The sign-in goes only to the server name
 ```
 
 In a settings file these are `wim-windows-signin = true`, `wim-token-file = <path>` and
-`wim-client-cert = <thumbprint>`.
+`wim-client-cert = <thumbprint>`, in the `[mount:<name>]` section of the mount that needs
+them. They are refused in `[defaults]`.
+
+**Why not in `[defaults]`.** A default applies to every mount in the file, and a mount cannot
+take it away. A sign-in is meant for one server. Suppose `[defaults]` named your company's
+token and one mount came from a vendor's server: the vendor would receive your company's
+token. Windows sign-in would also be offered to every server in the file, and a client
+certificate shown to each one. Naming the sign-in in each mount's own section makes you choose
+it per server, so it cannot spread to a server you did not mean.
 
 **Which account signs in.** Mounting needs administrator rights, so the program runs as
 whoever approved the Windows prompt. That is usually you. If someone typed a different
@@ -294,14 +304,20 @@ connects, for example `Signing in to images.corp.local as CONTOSO\admin (Windows
 to the server. If your own account could read the file, any program running as you could
 read it too, silently: a bad script, a browser download you ran, an editor extension. So the
 program uses the file only when no one but administrators and SYSTEM can read or change it.
-Put it in a folder of its own and run:
+
+Protect the file first and put the token in afterwards, so it is never readable by others.
+A new folder under `C:\` lets every signed-in account read what is in it until then. In an
+administrator PowerShell window, with the token copied to the clipboard:
 
 ```powershell
+New-Item -ItemType Directory C:\Config; New-Item C:\Config\wim.token
 .\WimDriverMount.exe --protect-config C:\Config\wim.token
+Get-Clipboard | Set-Content C:\Config\wim.token -NoNewline
 ```
 
-That leaves the file and its folder to administrators and SYSTEM. It does not show the
-token. The token is never printed, logged or put on a command line: a background mount is
+`--protect-config` leaves the file and its folder to administrators and SYSTEM, and it does
+not show the token. Pasting from the clipboard keeps the token out of PowerShell's command
+history; clear the clipboard afterwards, since any program running as you can read it. The token is never printed, logged or put on a command line: a background mount is
 given the file's path and reads the file itself.
 
 **Why `--preview-drivers` then asks for administrator rights.** The preview normally runs
