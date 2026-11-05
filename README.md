@@ -305,19 +305,24 @@ to the server. If your own account could read the file, any program running as y
 read it too, silently: a bad script, a browser download you ran, an editor extension. So the
 program uses the file only when no one but administrators and SYSTEM can read or change it.
 
-Protect the file first and put the token in afterwards, so it is never readable by others.
-A new folder under `C:\` lets every signed-in account read what is in it until then. In an
+Lock the folder first, then create the token file inside it, so the token is never readable
+by others. A new folder under `C:\` lets every signed-in account read what is in it until it is
+locked, and a program that opened a file before then could keep reading it afterwards. A file
+created after the lock starts out readable by administrators and SYSTEM only. In an
 administrator PowerShell window, with the token copied to the clipboard:
 
 ```powershell
-New-Item -ItemType Directory C:\Config; New-Item C:\Config\wim.token
-.\WimDriverMount.exe --protect-config C:\Config\wim.token
+New-Item -ItemType Directory C:\Config; New-Item C:\Config\lock
+.\WimDriverMount.exe --protect-config C:\Config\lock
 Get-Clipboard | Set-Content C:\Config\wim.token -NoNewline
+.\WimDriverMount.exe --protect-config C:\Config\wim.token
+Remove-Item C:\Config\lock
 ```
 
-`--protect-config` leaves the file and its folder to administrators and SYSTEM, and it does
-not show the token. Pasting from the clipboard keeps the token out of PowerShell's command
-history; clear the clipboard afterwards, since any program running as you can read it. The token is never printed, logged or put on a command line: a background mount is
+The first `--protect-config` locks the folder to administrators and SYSTEM. The second makes
+the Administrators group the new file's owner, which the program requires. It does not show
+the token. Pasting from the clipboard keeps the token out of PowerShell's command history;
+clear the clipboard afterwards, since any program running as you can read it. The token is never printed, logged or put on a command line: a background mount is
 given the file's path and reads the file itself.
 
 **Why `--preview-drivers` then asks for administrator rights.** The preview normally runs

@@ -173,7 +173,7 @@ internal static class TrustedFile
             // A sign-in token file is protected the same way and must never be shown,
             // even pasted with "Bearer " or a second line. Only a file with a
             // [section], as every settings file has, is shown.
-            if (!lines.Any(line => line.TrimStart('\uFEFF', ' ', '\t').StartsWith('[')))
+            if (!lines.Any(line => line.TrimStart('\uFEFF').Trim().StartsWith('['))) // Trimmed as MountConfiguration trims, so no header hides from this.
             {
                 Array.Clear(bytes);
                 output.WriteLine("This file has no [section], so it is not a settings file: it may hold a sign-in token, and its contents are not shown.");
