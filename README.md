@@ -312,15 +312,19 @@ created after the lock starts out readable by administrators and SYSTEM only. In
 administrator PowerShell window, with the token copied to the clipboard:
 
 ```powershell
-New-Item -ItemType Directory C:\Config; New-Item C:\Config\lock
+New-Item -ItemType Directory C:\Config
+New-Item C:\Config\lock
 .\WimDriverMount.exe --protect-config C:\Config\lock
-Get-Clipboard | Set-Content C:\Config\wim.token -NoNewline
+if ($LASTEXITCODE -eq 0) { New-Item C:\Config\wim.token -Value (Get-Clipboard -Raw) }
 .\WimDriverMount.exe --protect-config C:\Config\wim.token
 Remove-Item C:\Config\lock
 ```
 
-The first `--protect-config` locks the folder to administrators and SYSTEM. The second makes
-the Administrators group the new file's owner, which the program requires. It does not show
+The first `--protect-config` locks the folder to administrators and SYSTEM. The token is written
+only if that worked, and only into a new file: `New-Item` refuses a file that is already
+there, which someone else could have put there before the lock. If any line reports an error,
+stop, delete `C:\Config` and start again. The second `--protect-config` makes the
+Administrators group the token file's owner, which the program requires. It does not show
 the token. Pasting from the clipboard keeps the token out of PowerShell's command history;
 clear the clipboard afterwards, since any program running as you can read it. The token is never printed, logged or put on a command line: a background mount is
 given the file's path and reads the file itself.

@@ -166,7 +166,8 @@ internal static class TrustedFile
         // file was not changed before. Show exactly what is being approved.
         using (var content = new FileStream(new SafeFileHandle(file.DangerousGetHandle(), ownsHandle: false), FileAccess.Read))
         {
-            if (content.Length > 1024 * 1024) throw new IOException("This file is too large to be a settings file.");
+            // The parser allows 1 MiB of characters, which UTF-8 can make up to 4 MiB of bytes.
+            if (content.Length > 4 * 1024 * 1024) throw new IOException("This file is too large to be a settings file.");
             byte[] bytes = new byte[content.Length];
             content.ReadExactly(bytes);
             string[] lines = System.Text.Encoding.UTF8.GetString(bytes).Split('\n');
