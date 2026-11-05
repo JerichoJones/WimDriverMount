@@ -688,7 +688,11 @@ internal static partial class DriverCapture
         internal readonly HashSet<string> Folders = folders;
         internal readonly TextWriter Output = output;
         internal string? Error;
-        internal int LastTenth = -1;
+        internal int LastTenth = -1, LastPercent = -1;
+        // A console window gets one progress bar redrawn in place; redirected output (a log,
+        // a script) keeps one line per 10%, which a file can hold.
+        internal readonly bool Live = ReferenceEquals(output, Console.Out) && !Console.IsOutputRedirected;
+        internal bool BarOpen;
         internal volatile bool Cancelled;
     }
 
@@ -723,7 +727,12 @@ internal static partial class DriverCapture
                 try { SetImageInformation(image, count, state.Output); }
                 finally { WIMCloseHandle(image); }
             }
-            finally { WIMUnregisterMessageCallback(handle, Callback); }
+            finally
+            {
+                WIMUnregisterMessageCallback(handle, Callback);
+                // A bar left part-way (a failure, Ctrl+C) ends its line before any message.
+                if (state.BarOpen) { state.Output.WriteLine(); state.BarOpen = false; }
+            }
             captured = true;
         }
         finally
@@ -758,12 +767,32 @@ internal static partial class DriverCapture
         }
         else if (id == MsgProgress)
         {
-            int tenth = (int)Math.Clamp(wParam.ToInt64() / 10, 0, 10);
-            if (tenth > state.LastTenth) { state.LastTenth = tenth; state.Output.WriteLine($"  {tenth * 10}%"); }
+            int percent = (int)Math.Clamp(wParam.ToInt64(), 0, 100);
+            if (state.Live)
+            {
+                if (percent > state.LastPercent)
+                {
+                    state.LastPercent = percent;
+                    state.Output.Write("\r  " + Bar(percent));
+                    state.BarOpen = percent < 100;
+                    if (!state.BarOpen) state.Output.WriteLine();
+                }
+            }
+            else
+            {
+                int tenth = percent / 10;
+                if (tenth > state.LastTenth) { state.LastTenth = tenth; state.Output.WriteLine($"  {tenth * 10}%"); }
+            }
         }
         return MsgSuccess;
     }
 
+    // "[████████████░░░░░░░░░░░░░░░░░░]  40%": 30 cells, each 1/30 of the way.
+    internal static string Bar(int percent)
+    {
+        int filled = percent * 30 / 100;
+        return "[" + new string('\u2588', filled) + new string('\u2591', 30 - filled) + "] " + $"{percent,3}%";
+    }
     internal static bool Included(string path, string root, IReadOnlySet<string> folders)
     {
         if (path.Equals(root, StringComparison.OrdinalIgnoreCase)) return true;

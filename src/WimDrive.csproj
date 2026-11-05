@@ -11,7 +11,7 @@
          one number names many different programs. build.ps1
          stamps SourceRevisionId with the commit, so the version option
          identifies the exact source a binary came from. -->
-    <Version>0.8.1</Version>
+    <Version>0.8.2</Version>
     <Authors>Jericho Jones</Authors>
     <!-- MIT: everything here is Jericho's own work or permissive. Solid-resource
          support was rewritten clean-room (WimReader/SOURCE-NOTICES.md); keep

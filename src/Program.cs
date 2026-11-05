@@ -1219,7 +1219,7 @@ internal static class Program
     // Each is used only if the window can hold it; otherwise the next one down, then text.
     private static readonly (string Resource, int Width, int Height)[] Splashes =
     [
-        ("WimDriverMount.SplashLarge", 77, 21),   // 17 rows by 75 columns
+        ("WimDriverMount.SplashLarge", 77, 17),   // 13 rows by 75 columns, the name in block letters
         ("WimDriverMount.Splash", 69, 17),        // 13 rows by 67 columns
     ];
 
