@@ -1,3 +1,5 @@
+<p align="center"><img src="logo.png" alt="WIM Driver Mount" width="600"></p>
+
 # WIM Driver Mount
 
 Version 0.8.0 · Jericho Jones · MIT (third-party notices in `licenses`).
