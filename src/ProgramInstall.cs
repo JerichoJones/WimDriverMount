@@ -46,7 +46,8 @@ internal static class ProgramInstall
         {
             RequireSafeFolder(target);
             // A program an uninstall renamed, waiting for Windows to delete it at restart, is ours too.
-            if (!File.Exists(Path.Combine(target, ManifestName)) && Directory.EnumerateFileSystemEntries(target).Any(e => !PendingRemoval(e)))
+            // So is an empty folder of ours that a stopped install or uninstall left.
+            if (!File.Exists(Path.Combine(target, ManifestName)) && Directory.EnumerateFileSystemEntries(target).Any(e => !PendingRemoval(e) && !EmptyOwnFolder(e)))
                 throw new IOException($"{SafeText.Path(target)} already holds files that --install did not put there. Choose a new or empty folder.");
         }
         if (File.Exists(installed) && !force)
@@ -95,9 +96,13 @@ internal static class ProgramInstall
         // copy without one must not lose it.
         var current = files.Select(f => f.Relative).ToHashSet(StringComparer.OrdinalIgnoreCase);
         string previous = Path.Combine(target, ManifestName);
-        var before = File.Exists(previous) && new FileInfo(previous).Length <= 64 * 1024
-            ? File.ReadAllLines(previous).Where(line => Allowed(line) && File.Exists(Path.Combine(target, line))).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
-            : [];
+        // A list another account could change is not believed (it is rewritten below):
+        // otherwise its entries would decide what is deleted here as administrator. Then
+        // only a Dokan installer actually beside the program stays listed.
+        bool trusted = File.Exists(previous) && new FileInfo(previous).Length <= 64 * 1024 &&
+            TrustedFile.WhoElseCanChange(new FileInfo(previous).GetAccessControl(AccessControlSections.Access | AccessControlSections.Owner)) is null;
+        var before = (trusted ? File.ReadAllLines(previous).Where(Allowed) : File.Exists(previous) ? DokanInstallers : [])
+            .Where(line => File.Exists(Path.Combine(target, line))).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var stale = before.Where(line => !current.Contains(line) && !DokanInstallers.Contains(line, StringComparer.OrdinalIgnoreCase)).ToList();
         // Dokan's installer first, being the one part that can be refused; the
         // program last, so a copy that stops part way never leaves a new program
@@ -178,7 +183,9 @@ internal static class ProgramInstall
                     "If a drive is mounted with WIM Driver Mount, unmount it first, then run --uninstall again.");
             }
         }
-        foreach (string folder in Folders) DeleteIfEmpty(Path.Combine(target, folder));
+        // A folder still in use (a console's current folder, say) just stays; --install accepts it.
+        foreach (string folder in Folders)
+            try { DeleteIfEmpty(Path.Combine(target, folder)); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         // Another account's menu may still run the program from here. Where
         // ordinary accounts can create folders beside it, an empty folder is
         // left, administrator-only, so nobody can make a new one of that name.
@@ -203,6 +210,9 @@ internal static class ProgramInstall
 
     // The name Uninstall gives the running program before Windows deletes it at restart:
     // .WimDriverMount.exe.<32 hex digits>.removed, a file.
+    private static bool EmptyOwnFolder(string path) =>
+        Folders.Contains(Path.GetFileName(path), StringComparer.OrdinalIgnoreCase) && Directory.Exists(path) && !Directory.EnumerateFileSystemEntries(path).Any();
+
     private static bool PendingRemoval(string path)
     {
         string name = Path.GetFileName(path);
