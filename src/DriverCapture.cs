@@ -141,14 +141,14 @@ internal static partial class DriverCapture
             Write(staged, temp, compression, packages.Count, state);
             if (state.Cancelled) throw new OperationCanceledException("Cancelled with Ctrl+C.");
             output.WriteLine("Reading every file back through this program's reader...");
-            Verify(staged, packages, state);
+            try { Verify(staged, packages, state); } finally { state.EndProgress(); }
             long size = new FileInfo(staged).Length;
             string folder = Path.GetDirectoryName(wim)!;
             long free = FreeBytes(folder);
             if (free < size + Margin)
                 throw new IOException($"not enough free space for {SafeText.Path(folder)}: the WIM is {Size(size)}, plus {Size(Margin)} kept free, and {Size(free)} is free. Nothing was written there.");
             output.WriteLine($"Copying it to {SafeText.Path(wim)}...");
-            return (Fill(target, staged, () => state.Cancelled), size);
+            try { return (Fill(target, staged, () => state.Cancelled, state.Progress), size); } finally { state.EndProgress(); }
         }
         finally
         {
@@ -231,29 +231,46 @@ internal static partial class DriverCapture
 
     // Copies the staged WIM into the opened target, reads it back, and keeps it. Returns the
     // copy's SHA-256.
-    internal static string Fill(Target target, string staged, Func<bool> cancelled)
+    // progress: percent of copying and reading back together.
+    internal static string Fill(Target target, string staged, Func<bool> cancelled, Action<int>? progress = null)
     {
         var file = target.File;
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        long total = 0, done = 0;
         using (var source = new FileStream(staged, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20))
         {
+            total = Math.Max(1, source.Length * 2);
             byte[] buffer = new byte[1 << 20];
             for (int read; (read = source.Read(buffer)) > 0;)
             {
                 if (cancelled()) throw new OperationCanceledException("Cancelled with Ctrl+C.");
                 hash.AppendData(buffer, 0, read);
                 file.Write(buffer, 0, read);
+                done += read; progress?.Invoke((int)(done * 100 / total));
             }
         }
         file.Flush(flushToDisk: true);
         byte[] written = hash.GetHashAndReset();
         file.Position = 0;
-        if (!SHA256.HashData(file).AsSpan().SequenceEqual(written))
+        if (!HashOf(file, n => { done += n; progress?.Invoke((int)(done * 100 / total)); }, cancelled).AsSpan().SequenceEqual(written))
             throw new InvalidDataException($"{target.Wim} does not read back as written.");
         SetDelete(file.SafeFileHandle, false, target.Wim);
         return Convert.ToHexString(written);
     }
 
+    // SHA-256 of a stream, read 1 MB at a time, telling `advance` each chunk's size.
+    private static byte[] HashOf(Stream stream, Action<int> advance, Func<bool> cancelled)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        byte[] buffer = new byte[1 << 20];
+        for (int read; (read = stream.Read(buffer)) > 0;)
+        {
+            if (cancelled()) throw new OperationCanceledException("Cancelled with Ctrl+C.");
+            hash.AppendData(buffer, 0, read);
+            advance(read);
+        }
+        return hash.GetHashAndReset();
+    }
     internal static string CopyToTarget(string staged, string wim, Func<bool> cancelled)
     {
         using var target = OpenTarget(wim);
@@ -694,6 +711,28 @@ internal static partial class DriverCapture
         internal readonly bool Live = ReferenceEquals(output, Console.Out) && !Console.IsOutputRedirected;
         internal bool BarOpen;
         internal volatile bool Cancelled;
+
+        // One step's progress (writing, reading back, copying), 0 to 100.
+        internal void Progress(int percent)
+        {
+            percent = Math.Clamp(percent, 0, 100);
+            if (Live)
+            {
+                if (percent <= LastPercent) return;
+                LastPercent = percent;
+                Output.Write("\r  " + Bar(percent));
+                BarOpen = percent < 100;
+                if (!BarOpen) Output.WriteLine();
+            }
+            else if (percent / 10 > LastTenth) { LastTenth = percent / 10; Output.WriteLine($"  {LastTenth * 10}%"); }
+        }
+
+        // Ends a step: a bar left part-way (a failure, Ctrl+C) ends its line before any message.
+        internal void EndProgress()
+        {
+            if (BarOpen) { Output.WriteLine(); BarOpen = false; }
+            LastPercent = LastTenth = -1;
+        }
     }
 
     private static void Write(string wim, string temp, Compression compression, int count, CaptureState state)
@@ -730,8 +769,7 @@ internal static partial class DriverCapture
             finally
             {
                 WIMUnregisterMessageCallback(handle, Callback);
-                // A bar left part-way (a failure, Ctrl+C) ends its line before any message.
-                if (state.BarOpen) { state.Output.WriteLine(); state.BarOpen = false; }
+                state.EndProgress();
             }
             captured = true;
         }
@@ -767,22 +805,7 @@ internal static partial class DriverCapture
         }
         else if (id == MsgProgress)
         {
-            int percent = (int)Math.Clamp(wParam.ToInt64(), 0, 100);
-            if (state.Live)
-            {
-                if (percent > state.LastPercent)
-                {
-                    state.LastPercent = percent;
-                    state.Output.Write("\r  " + Bar(percent));
-                    state.BarOpen = percent < 100;
-                    if (!state.BarOpen) state.Output.WriteLine();
-                }
-            }
-            else
-            {
-                int tenth = percent / 10;
-                if (tenth > state.LastTenth) { state.LastTenth = tenth; state.Output.WriteLine($"  {tenth * 10}%"); }
-            }
+            state.Progress((int)Math.Clamp(wParam.ToInt64(), 0, 100));
         }
         return MsgSuccess;
     }
@@ -843,14 +866,18 @@ internal static partial class DriverCapture
             throw new InvalidDataException($"The new WIM does not hold exactly the captured files: {absent.Count} missing" +
                 (absent.Count > 0 ? $" (such as {SafeText.Path(absent[0])})" : "") + $", {extra.Count} extra" +
                 (extra.Count > 0 ? $" (such as {SafeText.Path(extra[0])})" : "") + ".");
+        // Both copies of every file are read: progress counts the originals' bytes twice.
+        long total = Math.Max(1, expected.Values.Sum(p => new FileInfo(p).Length) * 2), done = 0;
+        void Advance(int n) { done += n; state.Progress((int)(done * 100 / total)); }
+        Func<bool> cancelled = () => state.Cancelled;
         foreach (var (inside, original) in expected)
         {
             if (state.Cancelled) throw new OperationCanceledException("Cancelled with Ctrl+C.");
             byte[] fromWim, fromDisk;
-            using (var s = image.OpenFile(@"\" + inside, FileMode.Open, FileAccess.Read)) fromWim = SHA256.HashData(s);
+            using (var s = image.OpenFile(@"\" + inside, FileMode.Open, FileAccess.Read)) fromWim = HashOf(s, Advance, cancelled);
             // Some drivers keep a file in their own package open for writing (an AMD log);
             // reading it needs every kind of sharing. A change to it fails the check.
-            using (var s = new FileStream(original, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) fromDisk = SHA256.HashData(s);
+            using (var s = new FileStream(original, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) fromDisk = HashOf(s, Advance, cancelled);
             if (!fromWim.AsSpan().SequenceEqual(fromDisk))
                 throw new InvalidDataException($"{SafeText.Path(inside)} in the new WIM does not match the original.");
         }
