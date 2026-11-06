@@ -842,9 +842,8 @@ internal static class Program
     // The right-click Mount: like Windows' Mount on an ISO, a background mount at
     // the highest free letter, then File Explorer on it. The image is chosen here,
     // unelevated, so the administrator prompt comes only once the user has
-    // picked one; the elevated copy does the same --background mount a console would.
-    // The letter is chosen here too, so the drive Explorer is opened on is the
-    // one the elevated copy was told to use.
+    // picked one; the elevated copy does the same --background mount a console would,
+    // and chooses the letter.
     private static int MountFromMenu(string wim, DriverOperationRunner.State state)
     {
         try
