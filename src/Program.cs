@@ -1439,7 +1439,7 @@ Options:
                          passed over for the next-ranked one.
   --setup-log            Request SetupAPI device-log markers for driver installation.
   --inspect-driver-journal <ID>  Show what a driver install recorded. Read-only.
-  --inspect-legacy-driver-journal <ID>  The same, for a journal kept in ProgramData.
+  --inspect-legacy-driver-journal <ID>  The same, for one kept by 0.8.0-0.9.0 in AppData.
   --preview-drivers      Show the driver --install-drivers would choose for each device.
                          Reads the WIM only: no mount, Dokan, elevation or installation.
                          With --wim-token-file it asks for administrator rights.

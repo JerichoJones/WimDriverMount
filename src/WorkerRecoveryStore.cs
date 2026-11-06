@@ -434,24 +434,38 @@ internal static partial class WorkerRecoveryStore
         finally { LocalFree(descriptor); }
     }
 
-    // Driver journals and worker records both use the current user's local
-    // application-data directory. In shared ProgramData any user can create
-    // folders, so another account could create WimDrive-<this SID> first: it is
-    // refused (RequirePrivateSecurity), but that alone would block every background
-    // mount. Only the explicit legacy journal inspection still reads ProgramData.
+    // Driver journals and worker records live in ProgramData\WimDriverMount, a
+    // folder only Administrators and SYSTEM can change (StoreFolderSddl), so no
+    // other account can create WimDrive-<this SID> first, and nor can the
+    // unelevated half of this sign-in. 0.8.0 to 0.9.0 kept them in the user's
+    // AppData\Local instead (Jericho, 2026-11-06: an app can be given control of
+    // AppData, and then every background mount is refused). Only the explicit
+    // legacy journal inspection still reads there.
     //
-    // The per-user folder is found from the profile path Windows keeps in the
-    // machine's ProfileList (GetUserProfileDirectory), not from the known-folder
-    // lookup: that reads the user's own "User Shell Folders" key, which the
-    // unelevated half of the sign-in can point anywhere.
+    // ProgramData comes from the machine-wide known folder. The old per-user
+    // folder is found from the profile path Windows keeps in the machine's
+    // ProfileList (GetUserProfileDirectory), not from the known-folder lookup:
+    // that reads the user's own "User Shell Folders" key, which the unelevated
+    // half of the sign-in can point anywhere.
     [DllImport("userenv.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetUserProfileDirectoryW(IntPtr token, [Out] char[]? profile, ref uint size);
 
+    private const string StoreFolderName = "WimDriverMount";
+    private const string StoreFolderSddl = "O:BAD:PAI(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BU)";
+
+    private static string ProgramDataPath()
+    {
+        string folder = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+        if (string.IsNullOrEmpty(folder) || !System.IO.Path.IsPathFullyQualified(folder))
+            throw new IOException("The ProgramData folder is unavailable.");
+        return System.IO.Path.GetFullPath(folder).TrimEnd('\\');
+    }
+
     private static string GetRecoveryBasePath(bool driverJournal, bool legacyDriverJournal = false)
     {
         string folder;
-        if (driverJournal && legacyDriverJournal) folder = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+        if (!(driverJournal && legacyDriverJournal)) folder = System.IO.Path.Combine(ProgramDataPath(), StoreFolderName);
         else
         {
             using var identity = WindowsIdentity.GetCurrent();
@@ -490,13 +504,7 @@ internal static partial class WorkerRecoveryStore
         var handles = new DirectoryHandles(path);
         try
         {
-            string current = root;
-            handles.Add(OpenDirectory(current, false, rejectReparseWrites: driverJournal, pinAgainstRename: driverJournal));
-            foreach (string component in basePath[root.Length..].Split('\\', StringSplitOptions.RemoveEmptyEntries))
-            {
-                current = System.IO.Path.Combine(current, component);
-                handles.Add(OpenDirectory(current, false, rejectReparseWrites: driverJournal, pinAgainstRename: driverJournal));
-            }
+            OpenStoreAncestors(handles, basePath, driverJournal, create: true);
             if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(PrivateSddl(sid, label: !driverJournal), 1, out IntPtr descriptor, out _))
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot create recovery directory security descriptor.");
             try
@@ -517,6 +525,82 @@ internal static partial class WorkerRecoveryStore
             return handles;
         }
         catch { handles.Dispose(); throw; }
+    }
+
+    // Opens the drive root and every folder down to basePath into handles. For the
+    // ProgramData store the last folder is ours: made here once, by an elevated
+    // run, with StoreFolderSddl in the same call, and refused unless only
+    // Administrators and SYSTEM can change it. One that another account made first
+    // is refused, never repaired: a handle it opened earlier keeps its access.
+    internal static void OpenStoreAncestors(DirectoryHandles handles, string basePath, bool driverJournal, bool create, bool pin = false)
+    {
+        string root = System.IO.Path.GetPathRoot(basePath) ?? throw new IOException("Recovery storage has no root.");
+        bool shared = string.Equals(basePath, System.IO.Path.Combine(ProgramDataPath(), StoreFolderName), StringComparison.OrdinalIgnoreCase);
+        string current = root;
+        handles.Add(OpenDirectory(current, false, rejectReparseWrites: driverJournal, pinAgainstRename: driverJournal || pin));
+        string[] parts = basePath[root.Length..].Split('\\', StringSplitOptions.RemoveEmptyEntries);
+        for (int i = 0; i < parts.Length; i++)
+        {
+            current = System.IO.Path.Combine(current, parts[i]);
+            if (shared && i == parts.Length - 1 && create && Elevated) CreateStoreFolder(current);
+            SafeFileHandle handle = OpenDirectory(current, false, rejectReparseWrites: driverJournal, pinAgainstRename: driverJournal || pin);
+            handles.Add(handle);
+            if (shared && i == parts.Length - 1) RequireStoreFolderSecurity(handle, current);
+        }
+    }
+
+    private static void CreateStoreFolder(string path)
+    {
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(StoreFolderSddl, 1, out IntPtr descriptor, out _))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot create the store folder security descriptor.");
+        try
+        {
+            var attributes = new SecurityAttributes { Length = Marshal.SizeOf<SecurityAttributes>(), Descriptor = descriptor, InheritHandle = 0 };
+            if (!CreateDirectoryW(path, ref attributes) && Marshal.GetLastWin32Error() is int error && error != 183)
+                throw new Win32Exception(error, $"Cannot create {SafeText.Path(path)}.");
+        }
+        finally { LocalFree(descriptor); }
+    }
+
+    // Owner Administrators or SYSTEM; everyone else may at most read and list.
+    // The ancestor check alone would let the current user own it or add to it.
+    private static void RequireStoreFolderSecurity(SafeFileHandle handle, string path)
+    {
+        var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+        var administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+        RawSecurityDescriptor security = ReadSecurity(handle);
+        if (security.Owner is not { } owner || !(owner.Equals(system) || owner.Equals(administrators)))
+            throw new UnauthorizedAccessException($"{SafeText.Path(path)} is owned by {Principal(security.Owner)}, not Administrators, so background mounts and driver installs cannot keep their records there. An administrator should check it and delete it; the program then makes it again.");
+        foreach (GenericAce entry in security.DiscretionaryAcl!)
+        {
+            // RequireTrustedDirectorySecurity already refused every other kind of entry.
+            if (entry is not CommonAce ace || ace.AceType != AceType.AccessAllowed || (ace.AceFlags & AceFlags.InheritOnly) != 0) continue;
+            if (ace.SecurityIdentifier.Equals(system) || ace.SecurityIdentifier.Equals(administrators)) continue;
+            if ((unchecked((uint)ace.AccessMask) & ~0x1200a9u) != 0)
+                throw new UnauthorizedAccessException($"{SafeText.Path(path)} can be changed by {Principal(ace.SecurityIdentifier)}, so background mounts and driver installs cannot keep their records there. An administrator should check it and delete it; the program then makes it again.");
+        }
+    }
+
+    private static string Principal(SecurityIdentifier? sid)
+    {
+        if (sid is null) return "no one";
+        try { return SafeText.Path(sid.Translate(typeof(NTAccount)).Value); }
+        catch (Exception ex) when (ex is IdentityNotMappedException or SystemException) { return sid.Value; }
+    }
+
+    private static RawSecurityDescriptor ReadSecurity(SafeFileHandle handle)
+    {
+        uint error = GetSecurityInfo(handle, 1, 0x5, out _, out _, out _, out _, out IntPtr native);
+        if (error != 0) throw new Win32Exception(checked((int)error), "Cannot inspect recovery directory security.");
+        try
+        {
+            uint length = GetSecurityDescriptorLength(native);
+            if (length == 0 || length > 65536) throw new InvalidDataException("Invalid directory security descriptor.");
+            byte[] bytes = new byte[checked((int)length)];
+            Marshal.Copy(native, bytes, 0, bytes.Length);
+            return new RawSecurityDescriptor(bytes, 0);
+        }
+        finally { if (native != IntPtr.Zero) LocalFree(native); }
     }
 
     // Separate from the background-worker slots. Records are retained on every
@@ -751,7 +835,7 @@ internal static partial class WorkerRecoveryStore
             if (!GetFileInformationByHandle(handle, out FileInformation info)) throw new Win32Exception(Marshal.GetLastWin32Error());
             if ((info.Attributes & DirectoryAttribute) == 0 || (info.Attributes & ReparseAttribute) != 0)
                 throw new IOException("Recovery directory is not a regular directory.");
-            RequireTrustedDirectorySecurity(handle, recordDirectory, stagingAncestor, rejectReparseWrites);
+            RequireTrustedDirectorySecurity(handle, path, recordDirectory, stagingAncestor, rejectReparseWrites);
             return handle;
         }
         catch { handle.Dispose(); throw; }
@@ -763,26 +847,29 @@ internal static partial class WorkerRecoveryStore
     // principals; the unelevated half of the current user is kept out of the worker
     // store by its integrity label and pin (see HighLabel), not by this check. Staging
     // ancestors also trust the Windows TrustedInstaller service SID.
-    private static void RequireTrustedDirectorySecurity(SafeFileHandle handle, bool recordDirectory, bool stagingAncestor = false, bool rejectReparseWrites = false)
+    //
+    // One exception (Jericho, 2026-11-06): journal ancestors refuse write-data and
+    // write-attributes because either lets a folder become a junction, but Windows
+    // makes only an empty folder a junction, and ProgramData always holds our
+    // store folder, open and pinned below it. So Users' standard write entry on
+    // ProgramData itself is allowed there, and only there; delete, owner and
+    // permission changes are still refused.
+    private static void RequireTrustedDirectorySecurity(SafeFileHandle handle, string path, bool recordDirectory, bool stagingAncestor = false, bool rejectReparseWrites = false)
     {
         using WindowsIdentity identity = WindowsIdentity.GetCurrent();
         SecurityIdentifier user = identity.User ?? throw new InvalidOperationException("Current user SID is unavailable.");
         var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
         var administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+        var users = new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null);
         var trustedInstaller = new SecurityIdentifier("S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464");
         bool Trusted(SecurityIdentifier? sid) => sid is not null && (sid.Equals(user) || sid.Equals(system) || sid.Equals(administrators));
-        uint error = GetSecurityInfo(handle, 1, 0x5, out _, out _, out _, out _, out IntPtr native);
-        if (error != 0) throw new Win32Exception(checked((int)error), "Cannot inspect recovery directory security.");
-        try
+        bool programData = rejectReparseWrites && !stagingAncestor && !recordDirectory &&
+            string.Equals(System.IO.Path.GetFullPath(path).TrimEnd('\\'), ProgramDataPath(), StringComparison.OrdinalIgnoreCase);
         {
-            uint length = GetSecurityDescriptorLength(native);
-            if (length == 0 || length > 65536) throw new InvalidDataException("Invalid directory security descriptor.");
-            byte[] bytes = new byte[checked((int)length)];
-            Marshal.Copy(native, bytes, 0, bytes.Length);
-            var security = new RawSecurityDescriptor(bytes, 0);
+            var security = ReadSecurity(handle);
             // No owner is never trusted (said here, not left to Equals' null handling).
             if (security.Owner is not { } owner || (!Trusted(owner) && !trustedInstaller.Equals(owner)) || security.DiscretionaryAcl is null)
-                throw new UnauthorizedAccessException("Recovery directory owner or access is not trusted.");
+                throw new UnauthorizedAccessException($"{SafeText.Path(path)} is owned by {Principal(security.Owner)}, so the records kept below it could be changed by that account.");
             const uint replacementOrChange = 0x00010000 | 0x00040000 | 0x00080000 | 0x00000040 | 0x10000000 | 0x40000000 | 0x02000000;
             uint dangerous = replacementOrChange | (recordDirectory ? 0x6u : 0u) | ((stagingAncestor || rejectReparseWrites) ? 0x102u : 0u);
             bool systemExplicitTraverse = false;
@@ -803,14 +890,14 @@ internal static partial class WorkerRecoveryStore
                 if (stagingAncestor && system.Equals(ace.SecurityIdentifier) &&
                     ((mask & 0x10000000u) != 0 || (mask & 0x20000000u) != 0 || (mask & 0xa0u) == 0xa0u))
                     systemExplicitTraverse = true;
+                uint refused = programData && users.Equals(ace.SecurityIdentifier) ? dangerous & ~0x102u : dangerous;
                 if (!Trusted(ace.SecurityIdentifier) && !(stagingAncestor && trustedInstaller.Equals(ace.SecurityIdentifier)) &&
-                    (unchecked((uint)ace.AccessMask) & dangerous) != 0)
-                    throw new UnauthorizedAccessException("Recovery directory can be changed by another principal.");
+                    (mask & refused) != 0)
+                    throw new UnauthorizedAccessException($"{SafeText.Path(path)} can be changed by {Principal(ace.SecurityIdentifier)}, so the records kept below it could be changed by that account.");
             }
             if (stagingAncestor && !systemExplicitTraverse)
                 throw new UnauthorizedAccessException("A staging ancestor does not explicitly grant SYSTEM traversal and attribute access.");
         }
-        finally { if (native != IntPtr.Zero) LocalFree(native); }
     }
 
     private static void RequireRegularFile(SafeFileHandle handle)

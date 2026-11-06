@@ -28,6 +28,7 @@ internal static partial class WorkerRecoveryStore
 
     // Explicit inspection only. Never move, delete, or silently fall back to
     // legacy journals. The same strict ancestor policy still applies there.
+    // Legacy means AppData\Local, where 0.8.0 to 0.9.0 kept them.
     internal static DriverJournalInventory.Result ReadLegacyDriverJournalOperation(Guid operationId)
         => ReadDriverJournalOperationCore(operationId, legacyProgramData: true);
 
@@ -53,13 +54,7 @@ internal static partial class WorkerRecoveryStore
         string privatePath = System.IO.Path.Combine(basePath, "WimDrive-DriverJournal-" + sid.Value);
         string operationPath = System.IO.Path.Combine(privatePath, operationId.ToString("N"));
         using var parents = new DirectoryHandles(privatePath);
-        string current = root;
-        parents.Add(OpenDirectory(current, false, rejectReparseWrites: true, pinAgainstRename: true));
-        foreach (string part in basePath[root.Length..].Split('\\', StringSplitOptions.RemoveEmptyEntries))
-        {
-            current = System.IO.Path.Combine(current, part);
-            parents.Add(OpenDirectory(current, false, rejectReparseWrites: true, pinAgainstRename: true));
-        }
+        OpenStoreAncestors(parents, basePath, driverJournal: true, create: false, pin: true);
         SafeFileHandle privateDir = OpenDirectory(privatePath, true, rejectReparseWrites: true, pinAgainstRename: true);
         parents.Add(privateDir);
         // Journals are written without an integrity label, so an elevated
