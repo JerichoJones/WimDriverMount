@@ -6,7 +6,7 @@ using Microsoft.Win32;
 // process's QueryDosDevice, and a mount there would sit under that mapping.
 internal static class DriveLetters
 {
-    private const int AccessDenied = unchecked((int)0xC0000022), NotFound = unchecked((int)0xC0000034), NoMoreEntries = unchecked((int)0x8000001A), BufferTooSmall = unchecked((int)0xC0000023);
+    private const int AccessDenied = unchecked((int)0xC0000022), NotFound = unchecked((int)0xC0000034), NoMoreEntries = unchecked((int)0x8000001A), BufferTooSmall = unchecked((int)0xC0000023), MoreEntries = 0x105;
 
     [StructLayout(LayoutKind.Sequential)] private struct UnicodeString { public ushort Length, MaximumLength; public IntPtr Buffer; }
     [StructLayout(LayoutKind.Sequential)] private struct ObjectAttributes { public int Length; public IntPtr RootDirectory, ObjectName; public uint Attributes; public IntPtr SecurityDescriptor, SecurityQualityOfService; }
@@ -74,25 +74,39 @@ internal static class DriveLetters
             if (status == NotFound && !required) return names;
             if (status != 0 && !required) return null;
             if (status != 0) throw new IOException($"Cannot check which drive letters other sign-ins use ({path}: 0x{status:X8}{(status == AccessDenied ? ", access denied" : "")}).");
-            int size = 4096;
+            // Many entries per call: the kernel walks the directory from its start on every call,
+            // so one entry per call costs n squared, and any standard user can fill their own
+            // session's directory to stall every mount.
+            int size = 0x10000;
             buffer = Marshal.AllocHGlobal(size);
             uint context = 0;
+            int entrySize = Marshal.SizeOf<DirectoryEntry>();
             for (byte restart = 1; ; restart = 0)
             {
-                status = NtQueryDirectoryObject(handle, buffer, size, 1, restart, ref context, out int needed);
+                status = NtQueryDirectoryObject(handle, buffer, size, 0, restart, ref context, out int needed);
                 // Any user can name an object in their own session longer than the buffer: grow
                 // and ask again (an object name is at most 64 KiB, so this ends).
                 while (status == BufferTooSmall && needed > size && needed <= 0x30000)
                 {
                     Marshal.FreeHGlobal(buffer); buffer = IntPtr.Zero;
                     buffer = Marshal.AllocHGlobal(size = needed);
-                    status = NtQueryDirectoryObject(handle, buffer, size, 1, restart, ref context, out needed);
+                    status = NtQueryDirectoryObject(handle, buffer, size, 0, restart, ref context, out needed);
                 }
                 if (status == NoMoreEntries) return names;
-                if (status != 0 && !required) return null;
-                if (status != 0) throw new IOException($"Cannot list {path} (0x{status:X8}).");
-                var entry = Marshal.PtrToStructure<DirectoryEntry>(buffer);
-                names.Add(Marshal.PtrToStringUni(entry.Name.Buffer, entry.Name.Length / 2));
+                if (status != 0 && status != MoreEntries && !required) return null;
+                if (status != 0 && status != MoreEntries) throw new IOException($"Cannot list {path} (0x{status:X8}).");
+                // The entries end with an all-zero one; their names follow them in the buffer.
+                int before = names.Count;
+                for (int offset = 0; offset + entrySize <= size; offset += entrySize)
+                {
+                    var entry = Marshal.PtrToStructure<DirectoryEntry>(buffer + offset);
+                    if (entry.Name.Buffer == IntPtr.Zero) break;
+                    names.Add(Marshal.PtrToStringUni(entry.Name.Buffer, entry.Name.Length / 2));
+                }
+                if (status == 0) return names;
+                // More to come but nothing returned: stop rather than ask forever.
+                if (names.Count == before && !required) return null;
+                if (names.Count == before) throw new IOException($"Cannot list {path} (no entries returned).");
             }
         }
         finally
