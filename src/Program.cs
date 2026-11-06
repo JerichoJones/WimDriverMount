@@ -1139,18 +1139,20 @@ internal static class Program
 
     private static char SelectDrive(string? requested)
     {
-        HashSet<char> elsewhere = DriveLetters.UsedElsewhere();
+        HashSet<char> elsewhere = DriveLetters.UsedElsewhere(IsAdministrator());
         if (requested is not null)
         {
             char selected = MountOptions.ParseDriveLetter(requested);
             if (selected < 'D') throw new IOException($"Drive {selected}: cannot be used; choose a letter from D to Z.");
-            if (IsAssigned(selected) || elsewhere.Contains(selected))
-                throw new IOException($"Drive {selected}: is already in use{(IsAssigned(selected) ? "" : " in another sign-in session (for example a network drive mapped without administrator rights) or as a saved network drive")}. Choose another letter, or leave --drive out to use the highest free one.");
+            bool here = IsAssigned(selected);
+            if (here || elsewhere.Contains(selected))
+                throw new IOException($"Drive {selected}: is already in use{(here ? "" : " in another sign-in session (for example a network drive mapped without administrator rights) or as a saved network drive")}. " +
+                    (fromMenu ? "Disconnect it, or mount from a console with --wim and --drive." : "Choose another letter, or leave --drive out to use the highest free one."));
             return selected;
         }
         for (char c = 'Z'; c >= 'D'; c--)
             if (!IsAssigned(c) && !elsewhere.Contains(c)) return c;
-        throw new IOException("No drive letter from D: through Z: is available.");
+        throw new IOException("No drive letter from D: through Z: is available. Letters used by other sign-in sessions and saved network drives count as in use.");
     }
 
     private static bool IsAssigned(char letter)

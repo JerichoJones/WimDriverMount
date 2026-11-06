@@ -18,24 +18,30 @@ internal static class DriveLetters
 
     // Letters seen by any logon session, plus saved network drives of every loaded profile
     // (they come back at the next sign-in). Administrators only: others cannot list sessions,
-    // so a non-elevated caller gets an empty set and the elevated copy checks again.
-    internal static HashSet<char> UsedElsewhere()
+    // so a non-elevated caller gets only its own saved network drives and the elevated copy checks again.
+    internal static HashSet<char> UsedElsewhere(bool administrator)
     {
         var used = new HashSet<char>();
-        if (!Program.IsAdministrator()) return used;
+        if (!administrator)
+        {
+            AddSaved(Registry.CurrentUser, "Network", used);
+            return used;
+        }
         const string root = @"\Sessions\0\DosDevices";
         foreach (string session in Names(root, required: true))
             foreach (string name in Names($@"{root}\{session}", required: false))
                 if (name.Length == 2 && name[1] == ':' && char.ToUpperInvariant(name[0]) is >= 'A' and <= 'Z' and char letter) used.Add(letter);
         using (RegistryKey users = Registry.Users)
-            foreach (string sid in users.GetSubKeyNames())
-            {
-                using RegistryKey? network = users.OpenSubKey($@"{sid}\Network");
-                if (network is null) continue;
-                foreach (string name in network.GetSubKeyNames())
-                    if (name.Length == 1 && char.ToUpperInvariant(name[0]) is >= 'A' and <= 'Z' and char letter) used.Add(letter);
-            }
+            foreach (string sid in users.GetSubKeyNames()) AddSaved(users, $@"{sid}\Network", used);
         return used;
+    }
+
+    private static void AddSaved(RegistryKey hive, string path, HashSet<char> used)
+    {
+        using RegistryKey? network = hive.OpenSubKey(path);
+        if (network is null) return;
+        foreach (string name in network.GetSubKeyNames())
+            if (name.Length == 1 && char.ToUpperInvariant(name[0]) is >= 'A' and <= 'Z' and char letter) used.Add(letter);
     }
 
     // A session that signs out while listed is gone (not found); anything else fails loudly,
