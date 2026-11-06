@@ -17,7 +17,7 @@ Required: the pinned Dokan 2.3.1.1000 MSI for that runtime (Dokan_x64.msi or
 Dokan_ARM64.msi), from https://github.com/dokan-dev/dokany/releases/tag/v2.3.1.1000.
 The script verifies its SHA-256 before and after copying it into the package.
 .PARAMETER SymbolsPath
-Folder to keep the symbol file (WimDriverMount.pdb) in, outside the package. It must
+Folder to keep the symbol file (WimDriverMount-<runtime>.pdb) in, outside the package. It must
 match the exact exe to read a crash stack, so keep it with each release. Defaults to
 the build log folder in the temp folder.
 .EXAMPLE
@@ -118,7 +118,7 @@ try {
     # records the build machine's folders. Kept in -SymbolsPath (never overwritten),
     # or beside the build log.
     $symbols = Join-Path $fullOutputPath 'WimDriverMount.pdb'
-    $keptSymbols = if ($SymbolsPath) { Join-Path (New-Item -ItemType Directory -Force -Path $SymbolsPath).FullName 'WimDriverMount.pdb' } else { $logPath -replace '\.txt$', '-WimDriverMount.pdb' }
+    $keptSymbols = if ($SymbolsPath) { Join-Path (New-Item -ItemType Directory -Force -Path $SymbolsPath).FullName "WimDriverMount-$Runtime.pdb" } else { $logPath -replace '\.txt$', '-WimDriverMount.pdb' }
     if (Test-Path -LiteralPath $symbols -PathType Leaf) { Move-Item -LiteralPath $symbols -Destination $keptSymbols; Write-Host "Symbols: $keptSymbols" }
     $published = @(Get-ChildItem -LiteralPath $fullOutputPath -Force | ForEach-Object Name)
     if ($published.Count -ne 1 -or $published[0] -ne 'WimDriverMount.exe') { throw "Publish produced more than the one program file: $($published -join ', ')" }

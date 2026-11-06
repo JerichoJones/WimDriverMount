@@ -653,7 +653,9 @@ downloads its NuGet packages). An x64 PC builds for x64 and for ARM64 PCs alike.
 3. The program and everything it needs are in `src\publish` (or the folder you name with
    `-OutputPath`): `WimDriverMount.exe`, Dokan's installer and the `licenses` folder. Copy
    that folder to the PC and run `WimDriverMount.exe`. The symbol file for reading crash
-   reports is kept beside the build log, not in the package.
+   reports is not in the package: it is kept beside the build log in the temp folder, or
+   in the folder you name with `-SymbolsPath`. It matches only that exact build, so keep
+   it with the release.
 
 Try it on a test machine or VM before a real one: it runs as administrator and installs
 drivers.
