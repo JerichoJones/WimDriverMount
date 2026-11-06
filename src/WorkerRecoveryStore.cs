@@ -548,12 +548,17 @@ internal static partial class WorkerRecoveryStore
         string root = System.IO.Path.GetPathRoot(basePath) ?? throw new IOException("Recovery storage has no root.");
         bool shared = string.Equals(basePath, storeFolder ?? StoreFolderPath(), StringComparison.OrdinalIgnoreCase);
         string current = root;
-        handles.Add(OpenDirectory(current, false, rejectReparseWrites: driverJournal, pinAgainstRename: driverJournal));
+        SafeFileHandle previous = OpenDirectory(current, false, rejectReparseWrites: driverJournal, pinAgainstRename: driverJournal);
+        handles.Add(previous);
         string[] parts = basePath[root.Length..].Split('\\', StringSplitOptions.RemoveEmptyEntries);
         for (int i = 0; i < parts.Length; i++)
         {
+            string parent = current;
             current = System.IO.Path.Combine(current, parts[i]);
             bool last = shared && i == parts.Length - 1;
+            // ProgramData's location comes from the environment, which the unelevated
+            // half may set. Its owner must be Windows or Administrators, as the real one is.
+            if (last) RequireMachineOwned(previous, parent);
             if (last && create && Elevated) CreateStoreFolder(current);
             SafeFileHandle handle;
             try { handle = OpenDirectory(current, false, rejectReparseWrites: driverJournal, pinAgainstRename: driverJournal); }
@@ -563,8 +568,17 @@ internal static partial class WorkerRecoveryStore
                 throw new UnauthorizedAccessException($"{ex.Message} {StoreFolderRemedy(current)}", ex);
             }
             handles.Add(handle);
+            previous = handle;
             if (last) RequireStoreFolderSecurity(handle, current);
         }
+    }
+
+    private static void RequireMachineOwned(SafeFileHandle handle, string path)
+    {
+        SecurityIdentifier? owner = ReadSecurity(handle).Owner;
+        if (owner is null || !(owner.IsWellKnown(WellKnownSidType.LocalSystemSid) || owner.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid) ||
+            owner.Value == "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"))
+            throw new UnauthorizedAccessException($"{SafeText.Path(path)} is owned by {Principal(owner)}, not Windows or Administrators, so background mounts and driver installs cannot keep their records below it. Check the ProgramData and SystemDrive environment variables.");
     }
 
     private static string StoreFolderRemedy(string path) =>

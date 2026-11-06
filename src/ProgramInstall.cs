@@ -203,7 +203,7 @@ internal static class ProgramInstall
         if (keepFolder) output.WriteLine($"The folder {SafeText.Path(target)} is kept: other accounts can create folders in {SafeText.Path(parent)}, and could put a program of their own where a menu still points.");
         // Kept: it holds every account's records and journals, and a new one could be made by anyone first.
         string store = WorkerRecoveryStore.StoreFolderPath();
-        if (Directory.Exists(store)) output.WriteLine($"The folder {SafeText.Path(store)} is kept: it holds each account's background-mount records and driver-install journals, and only administrators can change it.");
+        if (Directory.Exists(store)) output.WriteLine($"The folder {SafeText.Path(store)} is kept: it holds each account's background-mount records and driver-install journals.");
         output.WriteLine(pending is not null
             ? $"Removed WIM Driver Mount from {SafeText.Path(target)}. The running program is removed when Windows restarts" +
               (onlyPending && !keepFolder ? ", with its folder." : onlyPending ? "." : "; files it did not install were left there.")
