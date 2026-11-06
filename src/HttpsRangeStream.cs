@@ -111,15 +111,24 @@ internal sealed class HttpsRangeStream : Stream, IWimSourceHealth
             client.Dispose();
             throw new TimeoutException("The WIM server did not answer in time. Check the network and the server.");
         }
-        catch (HttpRequestException)
+        catch (HttpRequestException ex)
         {
             client.Dispose();
+            // SEC_E_CERT_UNKNOWN from Windows TLS: the server ended the handshake
+            // with a certificate alert. This client checks the server's certificate
+            // itself, so the alert is about ours, here none (Jericho, 2026-11-06).
+            // Seen against a server that requires one; other causes stay possible.
+            bool certificateAlert = false;
+            for (Exception? e = ex; e is not null; e = e.InnerException)
+                certificateAlert |= e is System.ComponentModel.Win32Exception { NativeErrorCode: unchecked((int)0x80090327) };
             throw new IOException(nameRefused
                 ? "The WIM server's certificate is not for the name in the URL, so nothing was read from it. Use the name the certificate was issued for."
                 : pinRefused
                 ? "The WIM server's certificate does not match the certificate pin you gave, so nothing was read from it. If the server's certificate was replaced, give the new certificate's SHA-256."
                 : signIn?.HasCertificate == true
                 ? $"Could not connect to the WIM server. If it requires a client certificate, check that it trusts {signIn.Thumbprint}."
+                : certificateAlert
+                ? "Could not connect to the WIM server: it refused the connection over a client certificate, and none was given. If it requires one, add --wim-client-cert <thumbprint>."
                 : "Could not connect to the WIM server. Check the address, the network and, for HTTPS, the server certificate.");
         }
         catch { client.Dispose(); throw; }
