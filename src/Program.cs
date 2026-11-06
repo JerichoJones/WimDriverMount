@@ -685,7 +685,7 @@ internal static class Program
             {
                 Console.WriteLine("WHATIF: Current process has administrator rights.");
             }
-            char drive = SelectDrive(letter);
+            char drive = SelectDrive(letter, warn: !previewDrivers);
             string mount = $"{drive}:\\";
             Console.WriteLine($"WIM: {SafeText.Path(path)}\nImage index: {index}" + (previewDrivers ? "" : $"\nDrive: {mount}"));
             // The drive belongs to the account this elevated process runs as, which is
@@ -850,6 +850,7 @@ internal static class Program
         {
             wim = ElevationPaths.CallerPath(wim);
             int index = 1;
+            string? imageName;
             using (var first = new ResilientFileSource(wim, CancellationToken.None))
             {
                 var parts = SplitWim.OpenParts(first, wim, false, name => new ResilientFileSource(name, CancellationToken.None));
@@ -864,6 +865,7 @@ internal static class Program
                     if (ImageChoice.Ask(wim, file.ImageNames()) is not int chosen) { handedOff = true; return 0; }
                     index = chosen;
                 }
+                imageName = file.ImageNames()[index - 1];
             }
             // The elevated copy picks the letter: it sees every sign-in session's letters, this copy
             // does not. The new drive is the one that appears here.
@@ -872,19 +874,31 @@ internal static class Program
             int result = IsAdministrator() ? RunMain(mount, state) : RequestElevation(mount);
             if (result == 0)
             {
-                string[] added = Environment.GetLogicalDrives().Where(d => !before.Contains(d)).ToArray();
-                // Explorer by its full path, from this process: the elevated copy
-                // would hand it the administrator's rights.
-                // The drive is mounted either way, so a failure here is reported, not returned.
-                try
+                // Only new WIM drives: a USB stick that arrived meanwhile is not ours.
+                var ours = Environment.GetLogicalDrives().Where(d => !before.Contains(d))
+                    .Select(d => (Drive: d, Label: WimDriveLabel(d))).Where(d => d.Label is not null).ToArray();
+                // Two right-click Mounts at once each see the other's drive too; the image name
+                // tells them apart, and if it cannot, both are opened rather than neither.
+                var mine = ours.Where(d => imageName is not null && d.Label == imageName).ToArray();
+                if (mine.Length == 0) mine = ours;
+                if (mine.Length == 0)
+                    MessageBoxW(IntPtr.Zero, "The WIM is mounted, but no new drive appeared in this sign-in. That happens when every free letter is used by " +
+                        "another sign-in: the mount then takes a letter one of your own drives (for example a network drive) uses here. Disconnect " +
+                        "that drive to see it, or unmount it from an administrator console, where it shows, with --unmount and its letter.", "WIM Driver Mount", 0x40 | 0x40000);
+                foreach (var (drive, _) in mine)
                 {
-                    if (added.Length != 1) throw new System.ComponentModel.Win32Exception(2, "the new drive letter could not be told apart from other changes.");
-                    using var explorer = Process.Start(new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe"))
-                        { UseShellExecute = false, ArgumentList = { added[0] } });
-                }
-                catch (System.ComponentModel.Win32Exception ex)
-                {
-                    MessageBoxW(IntPtr.Zero, $"The WIM is mounted, but File Explorer could not be opened on it: {SafeText.Message(ex.Message)} Open it from This PC.", "WIM Driver Mount", 0x40 | 0x40000);
+                    // Explorer by its full path, from this process: the elevated copy
+                    // would hand it the administrator's rights.
+                    // The drive is mounted either way, so a failure here is reported, not returned.
+                    try
+                    {
+                        using var explorer = Process.Start(new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe"))
+                            { UseShellExecute = false, ArgumentList = { drive } });
+                    }
+                    catch (System.ComponentModel.Win32Exception ex)
+                    {
+                        MessageBoxW(IntPtr.Zero, $"The WIM is mounted, but File Explorer could not be opened on it: {SafeText.Message(ex.Message)} Open {drive} from This PC.", "WIM Driver Mount", 0x40 | 0x40000);
+                    }
                 }
             }
             return result;
@@ -895,6 +909,17 @@ internal static class Program
             Console.Error.WriteLine($"WIM Driver Mount could not mount {SafeText.Path(Path.GetFileName(wim))}: {SafeText.Message(ex.Message)}");
             return 1;
         }
+    }
+
+    // The volume label of a mounted WIM drive (the image name, or empty), or null for any other drive.
+    private static string? WimDriveLabel(string drive)
+    {
+        try
+        {
+            var info = new DriveInfo(drive);
+            return info.IsReady && info.DriveFormat == "WIM" ? info.VolumeLabel : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
     }
 
     // The caller owns the WIM stream and filesystem until the mount closes.
@@ -1140,12 +1165,13 @@ internal static class Program
         return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
     }
 
-    private static char SelectDrive(string? requested)
+    // warn: false for the driver preview, which only names paths under the letter and mounts nothing.
+    private static char SelectDrive(string? requested, bool warn)
     {
         bool administrator = IsAdministrator();
         HashSet<char> elsewhere = DriveLetters.UsedElsewhere(administrator, out bool skipped);
-        // Only the driver preview picks a letter without elevation, and it mounts nothing.
-        if (skipped && administrator)
+        warn &= administrator; // unelevated, only the preview gets here
+        if (skipped && warn)
             Console.Error.WriteLine("WARNING: Another sign-in session does not let administrators see its drive letters. If it uses the letter chosen here, that session will not see this drive.");
         if (requested is not null)
         {
@@ -1167,7 +1193,7 @@ internal static class Program
                 if (fallback == '\0') fallback = c;
             }
         if (fallback == '\0') throw new IOException("No drive letter from D: through Z: is available.");
-        if (administrator)
+        if (warn)
             Console.Error.WriteLine($"WARNING: Every free drive letter is used by another sign-in session or as a saved network drive. Using {fallback}:; a session that uses {fallback}: will not see this drive.");
         return fallback;
     }
