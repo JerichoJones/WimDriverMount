@@ -6,7 +6,7 @@ using Microsoft.Win32;
 // process's QueryDosDevice, and a mount there would sit under that mapping.
 internal static class DriveLetters
 {
-    private const int AccessDenied = unchecked((int)0xC0000022), NotFound = unchecked((int)0xC0000034), NoMoreEntries = unchecked((int)0x8000001A), BufferTooSmall = unchecked((int)0xC0000023), MoreEntries = 0x105;
+    private const int AccessDenied = unchecked((int)0xC0000022), NotFound = unchecked((int)0xC0000034), NoMoreEntries = unchecked((int)0x8000001A), MoreEntries = 0x105;
 
     [StructLayout(LayoutKind.Sequential)] private struct UnicodeString { public ushort Length, MaximumLength; public IntPtr Buffer; }
     [StructLayout(LayoutKind.Sequential)] private struct ObjectAttributes { public int Length; public IntPtr RootDirectory, ObjectName; public uint Attributes; public IntPtr SecurityDescriptor, SecurityQualityOfService; }
@@ -75,23 +75,17 @@ internal static class DriveLetters
             if (status != 0 && !required) return null;
             if (status != 0) throw new IOException($"Cannot check which drive letters other sign-ins use ({path}: 0x{status:X8}{(status == AccessDenied ? ", access denied" : "")}).");
             // Many entries per call: the kernel walks the directory from its start on every call,
-            // so one entry per call costs n squared, and any standard user can fill their own
-            // session's directory to stall every mount.
-            int size = 0x10000;
+            // and any standard user can fill their own session's directory, so one entry per call
+            // stalled every mount (100k names: 62 s on 0.9.3). Batching makes far fewer calls.
+            // 128 KiB holds any single entry (a name is at most 64 KiB), so a long name any user
+            // can create is read, not reported as an unreadable session.
+            const int size = 0x20000;
             buffer = Marshal.AllocHGlobal(size);
             uint context = 0;
             int entrySize = Marshal.SizeOf<DirectoryEntry>();
             for (byte restart = 1; ; restart = 0)
             {
-                status = NtQueryDirectoryObject(handle, buffer, size, 0, restart, ref context, out int needed);
-                // Any user can name an object in their own session longer than the buffer: grow
-                // and ask again (an object name is at most 64 KiB, so this ends).
-                while (status == BufferTooSmall && needed > size && needed <= 0x30000)
-                {
-                    Marshal.FreeHGlobal(buffer); buffer = IntPtr.Zero;
-                    buffer = Marshal.AllocHGlobal(size = needed);
-                    status = NtQueryDirectoryObject(handle, buffer, size, 0, restart, ref context, out needed);
-                }
+                status = NtQueryDirectoryObject(handle, buffer, size, 0, restart, ref context, out _);
                 if (status == NoMoreEntries) return names;
                 if (status != 0 && status != MoreEntries && !required) return null;
                 if (status != 0 && status != MoreEntries) throw new IOException($"Cannot list {path} (0x{status:X8}).");
