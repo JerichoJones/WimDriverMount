@@ -1210,9 +1210,12 @@ internal static class Program
     // until its drive is ready, so under that lock the first copy's drive shows: choose again.
     private static char RecheckDrive(string? requested, char drive)
     {
-        if (requested is not null || !IsAssigned(drive)) return drive;
+        if (!IsAssigned(drive)) return drive;
+        // Refused here, before Dokan: a failed mount's advice would name the other drive's letter.
+        if (requested is not null)
+            throw new IOException($"Drive {drive}: came into use meanwhile. Choose another letter, or leave --drive out to use the highest free one.");
         char next = SelectDrive(null, warn: true);
-        Console.WriteLine($"Drive {drive}: was taken by another mount meanwhile; using {next}: instead.");
+        Console.WriteLine($"Drive {drive}: came into use meanwhile; using {next}: instead.");
         return next;
     }
 
