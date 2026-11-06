@@ -722,6 +722,8 @@ internal static class Program
                 using var lifecycle = DokanLifecycle.Acquire();
                 DokanLifecycle.Prepare(keepDokan, () => DokanInstaller.EnsureInstalled(false, noInstallDokan, installerUrl,
                     result => state.SetupRestart |= result));
+                drive = RecheckDrive(letter, drive);
+                mount = $"{drive}:\\";
                 using var remoteResult = WorkerStartup.StartAsync(path, index, drive, CancellationToken.None, testCertSha256, previewStream.Identity, wimSha256, parsed.AllUsers, fromMenu, signIn).GetAwaiter().GetResult();
                 Console.WriteLine(remoteResult.Detail);
                 if (remoteResult.Ready) Console.WriteLine($"READY {mount}");
@@ -766,14 +768,14 @@ internal static class Program
                 Console.WriteLine(AsTyped($"Program file matches --run-sha256 ({actual}). Files beside it are not checked."));
             }
 
-            InfCollectedIndex? collectedIndex = null;
-            if (installDrivers && !whatIf)
+            InfCollectedIndex Collect(string root)
             {
                 ConsoleCancelEventHandler collectHandler = (_, e) => { e.Cancel = true; sourceLifetime.Cancel(); };
                 Console.CancelKeyPress += collectHandler;
-                try { collectedIndex = InfCollectedIndex.Build(fs, mount, sourceLifetime.Token); }
+                try { return InfCollectedIndex.Build(fs, root, sourceLifetime.Token); }
                 finally { Console.CancelKeyPress -= collectHandler; }
             }
+            InfCollectedIndex? collectedIndex = installDrivers && !whatIf ? Collect(mount) : null;
             using var lifecycleLease = whatIf ? null : DokanLifecycle.Acquire();
             DokanInstaller.CheckResult dokanCheck = whatIf
                 ? DokanInstaller.EnsureInstalled(true, noInstallDokan, installerUrl)
@@ -787,6 +789,11 @@ internal static class Program
                 Console.WriteLine($"Preview complete ({watch.Elapsed.TotalSeconds:0.0} s). Nothing was installed or mounted.");
                 return dokanCheck.Ready ? 0 : 1;
             }
+            char chosen = drive;
+            drive = RecheckDrive(letter, drive);
+            mount = $"{drive}:\\";
+            // The index holds full paths on the drive.
+            if (collectedIndex is not null && drive != chosen) collectedIndex = Collect(mount);
             if (background)
             {
                 // The worker re-opens the path itself, so the hash has to travel
@@ -1197,6 +1204,16 @@ internal static class Program
         if (warn)
             Console.Error.WriteLine($"WARNING: Every free drive letter is used by another sign-in session or as a saved network drive. Using {fallback}:; a session that uses {fallback}: will not see this drive.");
         return fallback;
+    }
+
+    // Two copies started together choose the same free letter. Each holds the Dokan lifecycle lock
+    // until its drive is ready, so under that lock the first copy's drive shows: choose again.
+    private static char RecheckDrive(string? requested, char drive)
+    {
+        if (requested is not null || !IsAssigned(drive)) return drive;
+        char next = SelectDrive(null, warn: true);
+        Console.WriteLine($"Drive {drive}: was taken by another mount meanwhile; using {next}: instead.");
+        return next;
     }
 
     private static bool IsAssigned(char letter)
