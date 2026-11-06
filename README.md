@@ -354,9 +354,9 @@ Mount works like Windows' Mount on an ISO: the WIM is mounted in the background 
 highest free letter, and File Explorer opens on it. A WIM with several images asks which
 one first. Each mount asks for administrator approval, because Dokan drives need it; the
 drive keeps its **Unmount with WIM Driver Mount** entry for when you are done. For a split
-WIM, right-click the first part. A Mount that works shows no messages, warnings included
-(for example that another sign-in's drive letters could not be checked); a mount from a
-console shows them. A failed one says why in a message box.
+WIM, right-click the first part. A right-click Mount shows no warnings (for example that
+another sign-in's drive letters could not be checked); a mount from a console shows them. A
+message box appears only if the mount fails or its drive cannot be shown here.
 
 - **Another folder:** `--install "D:\Program Files\WimDriverMount"`. It must be on a local
   internal disk, reached through no link; its parent must already exist, and only

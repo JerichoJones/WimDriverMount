@@ -860,12 +860,13 @@ internal static class Program
                 // A task dialog cannot scroll; past this many buttons it outgrows a screen.
                 if (file.ImageCount > 16)
                     throw new NotSupportedException($"This WIM has {file.ImageCount} images, too many to list here. Mount it from a console with --wim and --index.");
+                var names = file.ImageNames();
                 if (file.ImageCount > 1)
                 {
-                    if (ImageChoice.Ask(wim, file.ImageNames()) is not int chosen) { handedOff = true; return 0; }
+                    if (ImageChoice.Ask(wim, names) is not int chosen) { handedOff = true; return 0; }
                     index = chosen;
                 }
-                imageName = file.ImageNames()[index - 1];
+                imageName = names[index - 1];
             }
             // The elevated copy picks the letter: it sees every sign-in session's letters, this copy
             // does not. The new drive is the one that appears here.
@@ -878,13 +879,13 @@ internal static class Program
                 var ours = Environment.GetLogicalDrives().Where(d => !before.Contains(d))
                     .Select(d => (Drive: d, Label: WimDriveLabel(d))).Where(d => d.Label is not null).ToArray();
                 // Two right-click Mounts at once each see the other's drive too; the image name
-                // tells them apart, and if it cannot, both are opened rather than neither.
-                var mine = ours.Where(d => imageName is not null && d.Label == imageName).ToArray();
-                if (mine.Length == 0) mine = ours;
+                // (the drive's label) tells them apart. An image without a name opens every new one.
+                var mine = imageName is null ? ours : ours.Where(d => d.Label == imageName).ToArray();
                 if (mine.Length == 0)
-                    MessageBoxW(IntPtr.Zero, "The WIM is mounted, but no new drive appeared in this sign-in. That happens when every free letter is used by " +
-                        "another sign-in: the mount then takes a letter one of your own drives (for example a network drive) uses here. Disconnect " +
-                        "that drive to see it, or unmount it from an administrator console, where it shows, with --unmount and its letter.", "WIM Driver Mount", 0x40 | 0x40000);
+                    MessageBoxW(IntPtr.Zero, "The WIM is mounted, but no new drive for it appeared in this sign-in. Most often every free letter was " +
+                        "used by another sign-in, and the mount took a letter one of your own drives (for example a network drive) uses here: " +
+                        "disconnect that drive to see it, or unmount it from an administrator console, where it shows, with --unmount and its letter. " +
+                        "Otherwise look for it in This PC.", "WIM Driver Mount", 0x40 | 0x40000);
                 foreach (var (drive, _) in mine)
                 {
                     // Explorer by its full path, from this process: the elevated copy
