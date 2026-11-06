@@ -19,10 +19,21 @@
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <ApplicationIcon>artwork\wimdrivermount-icon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <!-- DOTNET_STARTUP_HOOKS can come from HKCU\Environment, which the unelevated
-         half of the sign-in can set; ignore it. -->
-    <StartupHookSupport>false</StartupHookSupport>
+    <!-- Native code, no .NET runtime inside. A copy started as administrator gets its
+         environment from HKCU\Environment, which any program the user runs can write.
+         The .NET runtime obeys some of those variables before Main: a profiler, a GC
+         DLL (DOTNET_GCName), startup hooks, EventPipe files. NativeAOT has none of
+         them, so the administrator copy, its workers and an administrator console are
+         all out of their reach. One file still: no runtime files beside it. -->
+    <PublishAot>true</PublishAot>
+    <!-- JSON code is generated at build time (JsonSerializerContext); a call that
+         would need reflection fails in every build, not only the published one. -->
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- The exe names its symbol file without the build machine's folder. -->
+    <LinkerArg Include="/PDBALTPATH:%25_PDB%25" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="WimReader/DiscUtils.Wim.csproj" />
     <PackageReference Include="LTRData.DiscUtils.MountDokan" Version="[1.0.89]" />

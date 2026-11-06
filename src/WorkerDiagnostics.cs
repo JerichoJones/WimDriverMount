@@ -25,6 +25,9 @@ internal static class WorkerDiagnostics
 
     private const int MaxChain = 8;
 
+    // The AOT build keeps DokanException's public properties for the lookup below.
+    [System.Diagnostics.CodeAnalysis.DynamicDependency(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicProperties, "DokanNet.DokanException", "DokanNet")]
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "DokanException's properties are kept by the DynamicDependency above.")]
     internal static string Describe(string stage, Exception error)
     {
         ArgumentNullException.ThrowIfNull(stage);

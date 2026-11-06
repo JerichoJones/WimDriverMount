@@ -83,7 +83,7 @@ try {
 
     # No --runtime here: it would replace the RuntimeIdentifiers in Directory.Build.props
     # and drop the other architecture from packages.lock.json.
-    & $dotnet.Source restore $project --use-lock-file -p:SelfContained=true -p:PublishSingleFile=true -p:WimDriverMountBuildKind=release
+    & $dotnet.Source restore $project --use-lock-file -p:SelfContained=true -p:WimDriverMountBuildKind=release
     if ($LASTEXITCODE -ne 0) { throw "dotnet restore failed with exit code $LASTEXITCODE." }
 
     # Stamp the commit into the version, so a binary in the field can be traced
@@ -102,8 +102,19 @@ try {
     if ($revision) { Write-Host "Source revision: $revision" } else { Write-Host 'Source revision: unknown (not a git checkout)' }
     $revisionArgument = if ($revision) { "-p:SourceRevisionId=$revision" } else { '-p:SourceRevisionId=unknown' }
 
-    & $dotnet.Source publish $project --configuration Release --runtime $Runtime --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:WimDriverMountBuildKind=release $revisionArgument --no-restore --output $fullOutputPath
+    # NativeAOT (WimDrive.csproj) links with the Visual Studio C++ build tools for
+    # $Runtime, and finds them with vswhere.exe, which is not on PATH by default.
+    $vsInstaller = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer'
+    if (Test-Path -LiteralPath (Join-Path $vsInstaller 'vswhere.exe') -PathType Leaf) { $env:PATH = "$vsInstaller;$env:PATH" }
+    & $dotnet.Source publish $project --configuration Release --runtime $Runtime --self-contained true -p:WimDriverMountBuildKind=release $revisionArgument --no-restore --output $fullOutputPath
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE." }
+    # The symbol file is for reading crash stacks here, not for the package: it
+    # records the build machine's folders. Kept beside the build log.
+    $symbols = Join-Path $fullOutputPath 'WimDriverMount.pdb'
+    $keptSymbols = $logPath -replace '\.txt$', '-WimDriverMount.pdb'
+    if (Test-Path -LiteralPath $symbols -PathType Leaf) { Move-Item -LiteralPath $symbols -Destination $keptSymbols; Write-Host "Symbols: $keptSymbols" }
+    $published = @(Get-ChildItem -LiteralPath $fullOutputPath -Force | ForEach-Object Name)
+    if ($published.Count -ne 1 -or $published[0] -ne 'WimDriverMount.exe') { throw "Publish produced more than the one program file: $($published -join ', ')" }
 
     Copy-Item -LiteralPath $licensePath -Destination $fullOutputPath -Recurse -Force
     $bundledDokan = Join-Path $fullOutputPath $dokanMsiName

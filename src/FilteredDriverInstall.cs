@@ -27,18 +27,41 @@ internal static class FilteredDriverInstall
         Func<DriverDetection.InstalledDevice, Func<InfIndex.ModelEntry, bool>, CancellationToken, IReadOnlyList<PerDeviceDriverSelection.ExtensionDecision>>? SelectExtensions = null,
         Func<InfIndex.ModelEntry, DriverDetection.ExtensionInstallResult>? InstallExtension = null);
 
-    private static string DeviceState(DriverDetection.InstalledDevice device) => JsonSerializer.Serialize(new
-    {
-        Instance = device.InstanceId.ToUpperInvariant(), Hardware = device.HardwareIds.Select(x => x.ToUpperInvariant()).ToArray(),
-        Compatible = device.CompatibleIds.Select(x => x.ToUpperInvariant()).ToArray(), device.Inf, device.OriginalInf,
-        device.Date, device.Version, device.Section, device.Unbound, device.IdsUncertain, device.CaptureError, device.Problem
-    });
+    // The JSON these write is compared and journaled, so its shape is fixed: the
+    // records below list the properties in the order they have always been written.
+    // Named types, not anonymous ones, so the JSON code is generated at build time
+    // (the program is published NativeAOT, which has no runtime code generation).
+    internal sealed record DeviceStateJson(string Instance, string[] Hardware, string[] Compatible, string? Inf, string? OriginalInf,
+        string? Date, string? Version, string? Section, bool Unbound, bool IdsUncertain, string? CaptureError, uint? Problem);
+    internal sealed record CandidateStateJson(string Path, string ManufacturerSection, string Section, string InstallSection,
+        string? ActualInstallSection, string HardwareId, IReadOnlyList<string> CompatibleIds, InfIndex.DriverVersionInfo? DriverVersion);
+    internal sealed record SelectedIntentJson(string InstanceId, string? InstalledInf, string? InstalledSection, string? InstalledDate,
+        string? InstalledVersion, bool Unbound, string Path, string InstallSection, string? ActualInstallSection, string HardwareId,
+        InfIndex.DriverVersionInfo? DriverVersion);
+    internal sealed record ExtensionIntentJson(string Kind, string Path, string? ExtensionId, string InstallSection,
+        string? ActualInstallSection, InfIndex.DriverVersionInfo? DriverVersion, List<string> Devices);
 
-    private static string CandidateState(InfIndex.ModelEntry model) => JsonSerializer.Serialize(new
-    {
+    internal static string DeviceState(DriverDetection.InstalledDevice device) => JsonSerializer.Serialize(new DeviceStateJson(
+        device.InstanceId.ToUpperInvariant(), device.HardwareIds.Select(x => x.ToUpperInvariant()).ToArray(),
+        device.CompatibleIds.Select(x => x.ToUpperInvariant()).ToArray(), device.Inf, device.OriginalInf,
+        device.Date, device.Version, device.Section, device.Unbound, device.IdsUncertain, device.CaptureError, device.Problem),
+        FilteredDriverJson.Default.DeviceStateJson);
+
+    internal static string CandidateState(InfIndex.ModelEntry model) => JsonSerializer.Serialize(new CandidateStateJson(
         model.Path, model.ManufacturerSection, model.Section, model.InstallSection, model.ActualInstallSection,
-        model.HardwareId, model.CompatibleIds, model.DriverVersion
-    });
+        model.HardwareId, model.CompatibleIds, model.DriverVersion), FilteredDriverJson.Default.CandidateStateJson);
+
+    internal static string SelectedIntent(DriverDetection.InstalledDevice device, InfIndex.ModelEntry candidate) => JsonSerializer.Serialize(new SelectedIntentJson(
+        device.InstanceId, device.Inf, device.Section, device.Date, device.Version, device.Unbound,
+        candidate.Path, candidate.InstallSection, candidate.ActualInstallSection, candidate.HardwareId, candidate.DriverVersion),
+        FilteredDriverJson.Default.SelectedIntentJson);
+
+    internal static string ExtensionIntent(InfIndex.ModelEntry model, List<string> devices) => JsonSerializer.Serialize(new ExtensionIntentJson(
+        "extension", model.Path, model.ExtensionId, model.InstallSection, model.ActualInstallSection, model.DriverVersion, devices),
+        FilteredDriverJson.Default.ExtensionIntentJson);
+
+    internal static string Outcome(DriverDetection.SelectedInstallResult outcome) => JsonSerializer.Serialize(outcome, FilteredDriverJson.Default.SelectedInstallResult);
+    internal static string Outcome(DriverDetection.ExtensionInstallResult outcome) => JsonSerializer.Serialize(outcome, FilteredDriverJson.Default.ExtensionInstallResult);
 
     private static Func<DriverDetection.InstalledDevice, Func<InfIndex.ModelEntry, bool>, CancellationToken, PerDeviceDriverSelection.Decision> Selector(
         InfCollectedIndex index, CancellationToken cancellation)
@@ -334,13 +357,7 @@ internal static class FilteredDriverInstall
                     // journal's own record uncertain, so the run reports unknown.
                     try
                     {
-                    journal.WriteSelectedIntent(sequence, JsonSerializer.Serialize(new
-                    {
-                        device.InstanceId, InstalledInf = device.Inf, InstalledSection = device.Section, InstalledDate = device.Date,
-                        InstalledVersion = device.Version, device.Unbound,
-                        decision.Candidate.Path, decision.Candidate.InstallSection, decision.Candidate.ActualInstallSection,
-                        decision.Candidate.HardwareId, decision.Candidate.DriverVersion
-                    }));
+                    journal.WriteSelectedIntent(sequence, SelectedIntent(device, decision.Candidate));
                     }
                     catch { uncertain = true; throw; }
                     started = sequence;
@@ -356,7 +373,7 @@ internal static class FilteredDriverInstall
                     restart |= outcome.Restart;
                     if (outcome.StagingOutcomeUnknown || outcome.InstallationOutcomeUnknown)
                         throw new IOException("The installation call did not return a known outcome; its intent remains open.");
-                    try { journal.WriteSelectedCompletion(sequence, JsonSerializer.Serialize(outcome), outcome.JournalOutcome); } catch { uncertain = true; throw; }
+                    try { journal.WriteSelectedCompletion(sequence, Outcome(outcome), outcome.JournalOutcome); } catch { uncertain = true; throw; }
                     // Windows refused the package before touching the device (a bad
                     // signature or catalog, typically). Windows' own installer would
                     // just use the next-ranked package, so this does too: the refused
@@ -450,11 +467,7 @@ internal static class FilteredDriverInstall
                         int sequence = started + 1;
                         try
                         {
-                            journal.WriteSelectedIntent(sequence, JsonSerializer.Serialize(new
-                            {
-                                Kind = "extension", model.Path, model.ExtensionId, model.InstallSection, model.ActualInstallSection,
-                                model.DriverVersion, Devices = devicesForExtension
-                            }));
+                            journal.WriteSelectedIntent(sequence, ExtensionIntent(model, devicesForExtension));
                         }
                         catch { uncertain = true; throw; }
                         started = sequence;
@@ -468,7 +481,7 @@ internal static class FilteredDriverInstall
                         if (outcome.Installed) succeeded++;
                         else if (!outcome.NothingToChange) incomplete = true;
                         restart |= outcome.Restart;
-                        try { journal.WriteSelectedCompletion(sequence, JsonSerializer.Serialize(outcome), outcome.JournalOutcome); } catch { uncertain = true; throw; }
+                        try { journal.WriteSelectedCompletion(sequence, Outcome(outcome), outcome.JournalOutcome); } catch { uncertain = true; throw; }
                         if (outcome.Installed)
                         {
                             report.Add(("Extension", Devices(devicesForExtension), Driver(model) + " applied" + (outcome.Restart ? "; restart required" : "")));
@@ -592,3 +605,12 @@ internal static class FilteredDriverInstall
     }
 }
 
+
+// Default options, as the reflection-based calls used: the same names, order and escaping.
+[System.Text.Json.Serialization.JsonSerializable(typeof(FilteredDriverInstall.DeviceStateJson))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(FilteredDriverInstall.CandidateStateJson))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(FilteredDriverInstall.SelectedIntentJson))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(FilteredDriverInstall.ExtensionIntentJson))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(DriverDetection.SelectedInstallResult))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(DriverDetection.ExtensionInstallResult))]
+internal sealed partial class FilteredDriverJson : System.Text.Json.Serialization.JsonSerializerContext;

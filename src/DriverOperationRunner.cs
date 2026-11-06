@@ -105,31 +105,38 @@ internal static class DriverOperationRunner
                 error.WriteLine($"Driver journal {id:D} ({(!journalFailure && terminalRecorded ? "complete" : "not confirmed")}). " +
                     $"To check it later, run: .\\WimDriverMount.exe --inspect-driver-journal {id:D}");
             if (!machineReadable) return exitCode;
-            error.WriteLine("WIM Driver Mount driver result: " + System.Text.Json.JsonSerializer.Serialize(new
-            {
-                CallsStarted = result?.CallsStarted ?? 0, CallsReturned = result?.CallsReturned ?? 0,
-                SuccessfulCalls = result?.SuccessfulCalls ?? 0,
-                RestartReported = result?.RestartReported ?? false,
-                DokanSetupRestart = state.SetupRestart.ToString(),
-                OutcomeUnknown = (result?.OutcomeUnknown ?? true) || journalFailure,
-                RestartUnknown = (result?.OutcomeUnknown ?? true) || journalFailure,
-                Failed = result is null || result.Error is not null || unhandled is not null || journalFailure ||
+            error.WriteLine("WIM Driver Mount driver result: " + System.Text.Json.JsonSerializer.Serialize(new ResultJson(
+                CallsStarted: result?.CallsStarted ?? 0, CallsReturned: result?.CallsReturned ?? 0,
+                SuccessfulCalls: result?.SuccessfulCalls ?? 0,
+                RestartReported: result?.RestartReported ?? false,
+                DokanSetupRestart: state.SetupRestart.ToString(),
+                OutcomeUnknown: (result?.OutcomeUnknown ?? true) || journalFailure,
+                RestartUnknown: (result?.OutcomeUnknown ?? true) || journalFailure,
+                Failed: result is null || result.Error is not null || unhandled is not null || journalFailure ||
                     (exitCode != 0 && exitCode != 3010),
-                SetupLogStatus = result?.SetupLogStatus ?? "not attempted",
-                ErrorCode = (result?.Error as System.ComponentModel.Win32Exception)?.NativeErrorCode,
-                JournalOperationId = state.JournalOperationId,
-                JournalTerminalStatus = state.JournalOperationId is null ? "not created" :
+                SetupLogStatus: result?.SetupLogStatus ?? "not attempted",
+                ErrorCode: (result?.Error as System.ComponentModel.Win32Exception)?.NativeErrorCode,
+                JournalOperationId: state.JournalOperationId,
+                JournalTerminalStatus: state.JournalOperationId is null ? "not created" :
                     journalFailure ? "unconfirmed" : terminalRecorded ? "recorded" : "unconfirmed",
-                EventLogStatus = state.EventOperation is null || (reportEvent is null && !Program.EventLog) ? "not requested" : eventFailure ? "unconfirmed" : "write accepted; delivery unverified",
-                OverallExitCode = exitCode,
-                CleanupStatus = "unknown",
-                Detail = result?.Error is null ? null : SafeText.Message(result.Error.Message),
-                DoNotRetry = result is null || result.Error is not null || result.OutcomeUnknown || journalFailure ||
-                    (exitCode != 0 && exitCode != 3010)
-            }));
+                EventLogStatus: state.EventOperation is null || (reportEvent is null && !Program.EventLog) ? "not requested" : eventFailure ? "unconfirmed" : "write accepted; delivery unverified",
+                OverallExitCode: exitCode,
+                CleanupStatus: "unknown",
+                Detail: result?.Error is null ? null : SafeText.Message(result.Error.Message),
+                DoNotRetry: result is null || result.Error is not null || result.OutcomeUnknown || journalFailure ||
+                    (exitCode != 0 && exitCode != 3010)), DriverResultJson.Default.ResultJson));
         }
         // The report could not be written; as with the event entry, the result itself stands.
         catch (Exception) { return exitCode; }
         return exitCode;
     }
+
+    // The machine-readable result line. Its properties stay in this order: scripts read it.
+    internal sealed record ResultJson(int CallsStarted, int CallsReturned, int SuccessfulCalls, bool RestartReported,
+        string DokanSetupRestart, bool OutcomeUnknown, bool RestartUnknown, bool Failed, string SetupLogStatus, int? ErrorCode,
+        Guid? JournalOperationId, string JournalTerminalStatus, string EventLogStatus, int OverallExitCode, string CleanupStatus,
+        string? Detail, bool DoNotRetry);
 }
+
+[System.Text.Json.Serialization.JsonSerializable(typeof(DriverOperationRunner.ResultJson))]
+internal sealed partial class DriverResultJson : System.Text.Json.Serialization.JsonSerializerContext;

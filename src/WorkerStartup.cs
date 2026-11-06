@@ -31,7 +31,7 @@ internal static class WorkerStartup
 
     internal static string EncodeSourceIdentity(HttpsRangeStream.SourceIdentity identity)
     {
-        byte[] encoded = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(identity);
+        byte[] encoded = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(identity, SourceIdentityJson.Default.SourceIdentity);
         if (encoded.Length > 2048) throw new ArgumentException("Web source identity is too long for background startup.");
         return Convert.ToBase64String(encoded);
     }

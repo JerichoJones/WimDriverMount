@@ -604,21 +604,20 @@ for administrator approval, and cannot be combined with `--run`.
 
 When Windows starts WIM Driver Mount with administrator rights, it gives it your account's
 environment variables, and any program you run without elevation can change those
-(they are stored in `HKCU\Environment`). Two kinds matter here:
+(they are stored in `HKCU\Environment`).
 
-- **.NET runtime settings.** Variables such as `CORECLR_ENABLE_PROFILING` and
-  `DOTNET_DiagnosticPorts` can make the .NET runtime load other code as it starts, before
-  WIM Driver Mount runs its first line, so it cannot check or refuse them. That code then
-  runs with administrator rights. (Startup hooks, `DOTNET_STARTUP_HOOKS`, are switched off
-  in this build.)
+- **.NET runtime settings do not apply.** WIM Driver Mount is compiled to native code
+  (NativeAOT) and has no .NET runtime in it, so variables such as `CORECLR_ENABLE_PROFILING`,
+  `DOTNET_GCName`, `DOTNET_DiagnosticPorts` and `DOTNET_STARTUP_HOOKS`, which make an
+  ordinary .NET program load other code as it starts, have no effect on it. A few
+  `DOTNET_GC...` memory-tuning settings are still read.
 - **Variables in `--run` arguments.** A `.bat` or `.cmd` program is started through
   Command Prompt, which expands `%NAME%` in its arguments. A value you did not expect can
   change what that command does.
 
-This is not specific to WIM Driver Mount: the same variables affect every elevated .NET
-program, and every elevated batch file, you start. If programs you run without elevation
-might be hostile, check `HKCU\Environment` before approving the administrator prompt, and
-avoid `%NAME%` in `run-args`.
+This is not specific to WIM Driver Mount: the same variables affect every elevated batch
+file you start. If programs you run without elevation might be hostile, avoid `%NAME%` in
+`run-args`.
 
 **Sharing your console.** When the work writes into the window you typed in, any program
 you run without elevation can also attach to that window and send it Ctrl+C, which stops
@@ -630,7 +629,10 @@ program, to end it, and the mount closes after it. An interrupted driver install
 ## Build
 
 You need a Windows PC with an x64 processor, the
-[.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0), and internet access (the build
+[.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0),
+[Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/) with the
+"MSVC x64/x86 build tools" and "MSVC ARM64 build tools" components (the program is compiled
+to native code, which needs Microsoft's C++ linker), and internet access (the build
 downloads its NuGet packages). An x64 PC builds for x64 and for ARM64 PCs alike.
 
 1. Download Dokan's installer from its
@@ -648,7 +650,9 @@ downloads its NuGet packages). An x64 PC builds for x64 and for ARM64 PCs alike.
    If PowerShell refuses to run scripts, run it as
    `powershell -ExecutionPolicy Bypass -File .\src\build.ps1 -DokanMsiPath ...`.
 3. The program and everything it needs are in `src\publish` (or the folder you name with
-   `-OutputPath`). Copy that folder to the PC and run `WimDriverMount.exe`.
+   `-OutputPath`): `WimDriverMount.exe`, Dokan's installer and the `licenses` folder. Copy
+   that folder to the PC and run `WimDriverMount.exe`. The symbol file for reading crash
+   reports is kept beside the build log, not in the package.
 
 Try it on a test machine or VM before a real one: it runs as administrator and installs
 drivers.

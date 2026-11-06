@@ -295,3 +295,7 @@ internal sealed class HttpsRangeStream : Stream, IWimSourceHealth
     public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     protected override void Dispose(bool disposing) { if (disposing && !disposed) client.Dispose(); disposed = true; base.Dispose(disposing); }
 }
+
+// The worker receives the source identity as JSON on its command line (WorkerStartup, WorkerArguments).
+[System.Text.Json.Serialization.JsonSerializable(typeof(HttpsRangeStream.SourceIdentity))]
+internal sealed partial class SourceIdentityJson : System.Text.Json.Serialization.JsonSerializerContext;

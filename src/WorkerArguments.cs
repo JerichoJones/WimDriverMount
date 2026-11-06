@@ -65,7 +65,7 @@ internal sealed record WorkerArguments(
         if (values.TryGetValue("--source-identity", out string? encoded))
         {
             if (encoded.Length > MaxIdentityLength) throw new ArgumentException("Source identity is too long.");
-            identity = JsonSerializer.Deserialize<HttpsRangeStream.SourceIdentity>(Convert.FromBase64String(encoded))
+            identity = JsonSerializer.Deserialize(Convert.FromBase64String(encoded), SourceIdentityJson.Default.SourceIdentity)
                 ?? throw new InvalidDataException("Missing source identity.");
         }
 
