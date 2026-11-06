@@ -866,22 +866,26 @@ internal static class Program
                     index = chosen;
                 }
             }
-            char drive = SelectDrive(null);
-            string[] mount = ["--wim", wim, "--index", index.ToString(System.Globalization.CultureInfo.InvariantCulture), "--drive", $"{drive}:", "--background"];
+            // The elevated copy picks the letter: it sees every sign-in session's letters, this copy
+            // does not. The new drive is the one that appears here.
+            var before = new HashSet<string>(Environment.GetLogicalDrives(), StringComparer.OrdinalIgnoreCase);
+            string[] mount = ["--wim", wim, "--index", index.ToString(System.Globalization.CultureInfo.InvariantCulture), "--background"];
             int result = IsAdministrator() ? RunMain(mount, state) : RequestElevation(mount);
             if (result == 0)
             {
+                string[] added = Environment.GetLogicalDrives().Where(d => !before.Contains(d)).ToArray();
                 // Explorer by its full path, from this process: the elevated copy
                 // would hand it the administrator's rights.
                 // The drive is mounted either way, so a failure here is reported, not returned.
                 try
                 {
+                    if (added.Length != 1) throw new System.ComponentModel.Win32Exception(2, "the new drive letter could not be told apart from other changes.");
                     using var explorer = Process.Start(new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe"))
-                        { UseShellExecute = false, ArgumentList = { $"{drive}:\\" } });
+                        { UseShellExecute = false, ArgumentList = { added[0] } });
                 }
                 catch (System.ComponentModel.Win32Exception ex)
                 {
-                    MessageBoxW(IntPtr.Zero, $"Mounted at {drive}:, but File Explorer could not be opened on it: {SafeText.Message(ex.Message)}", "WIM Driver Mount", 0x40 | 0x40000);
+                    MessageBoxW(IntPtr.Zero, $"The WIM is mounted, but File Explorer could not be opened on it: {SafeText.Message(ex.Message)} Open it from This PC.", "WIM Driver Mount", 0x40 | 0x40000);
                 }
             }
             return result;
@@ -1141,7 +1145,7 @@ internal static class Program
     {
         bool administrator = IsAdministrator();
         HashSet<char> elsewhere = DriveLetters.UsedElsewhere(administrator, out bool skipped);
-        // The non-elevated pick is checked again by the elevated copy, which warns.
+        // Only the driver preview picks a letter without elevation, and it mounts nothing.
         if (skipped && administrator)
             Console.Error.WriteLine("WARNING: Another sign-in session does not let administrators see its drive letters. If it uses the letter chosen here, that session will not see this drive.");
         if (requested is not null)
@@ -1151,12 +1155,22 @@ internal static class Program
             bool here = IsAssigned(selected);
             if (here || elsewhere.Contains(selected))
                 throw new IOException($"Drive {selected}: is already in use{(here ? "" : " in another sign-in session (for example a network drive mapped without administrator rights) or as a saved network drive")}. " +
-                    (fromMenu ? "Mount from a console with --wim; it picks a letter no sign-in uses." : "Choose another letter, or leave --drive out to use the highest free one."));
+                    "Choose another letter, or leave --drive out to use the highest free one.");
             return selected;
         }
+        // Every free letter used by other sessions: take one anyway (Jericho, 2026-11-06), so one
+        // account holding them all cannot stop every mount; only that account misses the drive.
+        char fallback = '\0';
         for (char c = 'Z'; c >= 'D'; c--)
-            if (!IsAssigned(c) && !elsewhere.Contains(c)) return c;
-        throw new IOException("No drive letter from D: through Z: is available. Letters used by other sign-in sessions and saved network drives count as in use.");
+            if (!IsAssigned(c))
+            {
+                if (!elsewhere.Contains(c)) return c;
+                if (fallback == '\0') fallback = c;
+            }
+        if (fallback == '\0') throw new IOException("No drive letter from D: through Z: is available.");
+        if (administrator)
+            Console.Error.WriteLine($"WARNING: Every free drive letter is used by another sign-in session or as a saved network drive. Using {fallback}:; a session that uses {fallback}: will not see this drive.");
+        return fallback;
     }
 
     private static bool IsAssigned(char letter)
