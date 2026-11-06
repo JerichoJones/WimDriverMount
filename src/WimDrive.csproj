@@ -19,12 +19,13 @@
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <ApplicationIcon>artwork\wimdrivermount-icon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <!-- Native code, no .NET runtime inside. A copy started as administrator gets its
-         environment from HKCU\Environment, which any program the user runs can write.
-         The .NET runtime obeys some of those variables before Main: a profiler, a GC
-         DLL (DOTNET_GCName), startup hooks, EventPipe files. NativeAOT has none of
+    <!-- Native code; does not use the standard .NET runtime (CoreCLR). A copy started as
+         administrator gets its environment from HKCU\Environment, which any program the
+         user runs can write. CoreCLR obeys some of those variables before Main: a profiler,
+         a GC DLL (DOTNET_GCName), startup hooks, EventPipe files. NativeAOT has none of
          them, so the administrator copy, its workers and an administrator console are
-         all out of their reach. One file still: no runtime files beside it. -->
+         all out of their reach. Its own GC still reads a few DOTNET_GC* tuning settings.
+         One file still: no runtime files beside it. -->
     <PublishAot>true</PublishAot>
     <!-- JSON code is generated at build time (JsonSerializerContext); a call that
          would need reflection fails in every build, not only the published one. -->

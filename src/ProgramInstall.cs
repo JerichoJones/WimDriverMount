@@ -139,9 +139,8 @@ internal static class ProgramInstall
         return 0;
     }
 
-    // beforeRemoving runs once the checks pass and before any file is touched.
-    // Renaming the running program below ends this process's access to its own
-    // file, and a single-file program loads code it has not used yet from there.
+    // beforeRemoving runs once the checks pass and before any file is touched,
+    // including the running program's own rename below.
     internal static int Uninstall(string target, TextWriter output, Action? beforeRemoving = null)
     {
         target = CheckTarget(target);

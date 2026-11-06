@@ -16,6 +16,10 @@ win-x64 (default) or win-arm64.
 Required: the pinned Dokan 2.3.1.1000 MSI for that runtime (Dokan_x64.msi or
 Dokan_ARM64.msi), from https://github.com/dokan-dev/dokany/releases/tag/v2.3.1.1000.
 The script verifies its SHA-256 before and after copying it into the package.
+.PARAMETER SymbolsPath
+Folder to keep the symbol file (WimDriverMount.pdb) in, outside the package. It must
+match the exact exe to read a crash stack, so keep it with each release. Defaults to
+the build log folder in the temp folder.
 .EXAMPLE
 .\build.ps1 -DokanMsiPath C:\path\Dokan_x64.msi
 .EXAMPLE
@@ -29,7 +33,9 @@ param(
     [string] $DokanMsiPath,
     [Parameter()]
     [ValidateSet('win-x64', 'win-arm64')]
-    [string] $Runtime = 'win-x64'
+    [string] $Runtime = 'win-x64',
+    [Parameter()]
+    [string] $SymbolsPath
 )
 
 Set-StrictMode -Version Latest
@@ -109,9 +115,10 @@ try {
     & $dotnet.Source publish $project --configuration Release --runtime $Runtime --self-contained true -p:WimDriverMountBuildKind=release $revisionArgument --no-restore --output $fullOutputPath
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE." }
     # The symbol file is for reading crash stacks here, not for the package: it
-    # records the build machine's folders. Kept beside the build log.
+    # records the build machine's folders. Kept in -SymbolsPath (never overwritten),
+    # or beside the build log.
     $symbols = Join-Path $fullOutputPath 'WimDriverMount.pdb'
-    $keptSymbols = $logPath -replace '\.txt$', '-WimDriverMount.pdb'
+    $keptSymbols = if ($SymbolsPath) { Join-Path (New-Item -ItemType Directory -Force -Path $SymbolsPath).FullName 'WimDriverMount.pdb' } else { $logPath -replace '\.txt$', '-WimDriverMount.pdb' }
     if (Test-Path -LiteralPath $symbols -PathType Leaf) { Move-Item -LiteralPath $symbols -Destination $keptSymbols; Write-Host "Symbols: $keptSymbols" }
     $published = @(Get-ChildItem -LiteralPath $fullOutputPath -Force | ForEach-Object Name)
     if ($published.Count -ne 1 -or $published[0] -ne 'WimDriverMount.exe') { throw "Publish produced more than the one program file: $($published -join ', ')" }

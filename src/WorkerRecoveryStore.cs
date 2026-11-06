@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
+using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 
 internal static partial class WorkerRecoveryStore
@@ -442,10 +443,9 @@ internal static partial class WorkerRecoveryStore
     // AppData, and then every background mount is refused). Only the explicit
     // legacy journal inspection still reads there.
     //
-    // ProgramData comes from the machine-wide known folder. The old per-user
-    // folder is found from the profile path Windows keeps in the machine's
-    // ProfileList (GetUserProfileDirectory), not from the known-folder lookup:
-    // that reads the user's own "User Shell Folders" key, which the unelevated
+    // ProgramData and the old per-user folder both come from the machine's
+    // ProfileList (ProgramDataPath, GetUserProfileDirectory), not from the known-folder lookup:
+    // that reads the user's own "User Shell Folders" key and environment, which the unelevated
     // half of the sign-in can point anywhere.
     [DllImport("userenv.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -464,10 +464,15 @@ internal static partial class WorkerRecoveryStore
         OpenStoreAncestors(handles, StoreFolderPath(), driverJournal: true, create: true);
     }
 
+    // Not the known-folder lookup: it expands ProgramData and SystemDrive from this
+    // process's environment, which the unelevated half can set in HKCU\Environment.
+    // The machine's own value, from HKLM, with SystemDrive taken from the system folder.
     private static string ProgramDataPath()
     {
-        string folder = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-        if (string.IsNullOrEmpty(folder) || !System.IO.Path.IsPathFullyQualified(folder))
+        using RegistryKey? key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList");
+        string? folder = (key?.GetValue("ProgramData", null, RegistryValueOptions.DoNotExpandEnvironmentNames) as string)?
+            .Replace("%SystemDrive%", System.IO.Path.GetPathRoot(Environment.SystemDirectory)?.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
+        if (string.IsNullOrEmpty(folder) || folder.Contains('%') || !System.IO.Path.IsPathFullyQualified(folder))
             throw new IOException("The ProgramData folder is unavailable.");
         return System.IO.Path.GetFullPath(folder).TrimEnd('\\');
     }
@@ -553,12 +558,8 @@ internal static partial class WorkerRecoveryStore
         string[] parts = basePath[root.Length..].Split('\\', StringSplitOptions.RemoveEmptyEntries);
         for (int i = 0; i < parts.Length; i++)
         {
-            string parent = current;
             current = System.IO.Path.Combine(current, parts[i]);
             bool last = shared && i == parts.Length - 1;
-            // ProgramData's location comes from the environment, which the unelevated
-            // half may set. Its owner must be Windows or Administrators, as the real one is.
-            if (last) RequireMachineOwned(previous, parent);
             if (last && create && Elevated) CreateStoreFolder(current);
             SafeFileHandle handle;
             try { handle = OpenDirectory(current, false, rejectReparseWrites: driverJournal, pinAgainstRename: driverJournal); }
@@ -571,14 +572,6 @@ internal static partial class WorkerRecoveryStore
             previous = handle;
             if (last) RequireStoreFolderSecurity(handle, current);
         }
-    }
-
-    private static void RequireMachineOwned(SafeFileHandle handle, string path)
-    {
-        SecurityIdentifier? owner = ReadSecurity(handle).Owner;
-        if (owner is null || !(owner.IsWellKnown(WellKnownSidType.LocalSystemSid) || owner.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid) ||
-            owner.Value == "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"))
-            throw new UnauthorizedAccessException($"{SafeText.Path(path)} is owned by {Principal(owner)}, not Windows or Administrators, so background mounts and driver installs cannot keep their records below it. Check the ProgramData and SystemDrive environment variables.");
     }
 
     private static string StoreFolderRemedy(string path) =>

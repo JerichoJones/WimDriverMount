@@ -313,6 +313,14 @@ internal static class Program
         return exitCode;
     }
 
+    // Only the published NativeAOT exe is the whole program: any other build would
+    // leave its DLLs behind, and under the dotnet host ProcessPath is dotnet.exe.
+    // Native code has no assembly file, so its Location is empty; that is the point.
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("SingleFile", "IL3000", Justification = "An empty Location is the test.")]
+    private static bool IsPublishedProgram() =>
+        typeof(Program).Assembly.Location.Length == 0 &&
+        string.Equals(Path.GetFileName(Environment.ProcessPath), ProgramInstall.ProgramName, StringComparison.OrdinalIgnoreCase);
+
     private static int RunMain(string[] args, DriverOperationRunner.State state)
     {
         var watch = Stopwatch.StartNew();
@@ -491,13 +499,7 @@ internal static class Program
                 Console.Error.WriteLine($"WIM Driver Mount: use {args[0]}{(install ? " [<folder>] [--force]" : " [<folder>]")}. For help, run: .\\WimDriverMount.exe --help");
                 return 1;
             }
-            // Only the published single file is the whole program: any other build
-            // would leave its DLLs behind, and under the dotnet host ProcessPath is dotnet.exe.
-            // An assembly inside a single-file bundle has no location of its own.
-#pragma warning disable IL3000
-            if (install && (typeof(Program).Assembly.Location.Length != 0 ||
-                !string.Equals(Path.GetFileName(Environment.ProcessPath), ProgramInstall.ProgramName, StringComparison.OrdinalIgnoreCase)))
-#pragma warning restore IL3000
+            if (install && !IsPublishedProgram())
             {
                 Console.Error.WriteLine($"WIM Driver Mount: only the published {ProgramInstall.ProgramName} (one file, as build.ps1 makes it) can install itself.");
                 return 1;

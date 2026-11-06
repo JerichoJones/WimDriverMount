@@ -607,10 +607,11 @@ environment variables, and any program you run without elevation can change thos
 (they are stored in `HKCU\Environment`).
 
 - **.NET runtime settings do not apply.** WIM Driver Mount is compiled to native code
-  (NativeAOT) and has no .NET runtime in it, so variables such as `CORECLR_ENABLE_PROFILING`,
-  `DOTNET_GCName`, `DOTNET_DiagnosticPorts` and `DOTNET_STARTUP_HOOKS`, which make an
-  ordinary .NET program load other code as it starts, have no effect on it. A few
-  `DOTNET_GC...` memory-tuning settings are still read.
+  (NativeAOT) and does not use the standard .NET runtime (CoreCLR), so variables such as
+  `CORECLR_ENABLE_PROFILING`, `DOTNET_GCName`, `DOTNET_DiagnosticPorts` and
+  `DOTNET_STARTUP_HOOKS`, which make an ordinary .NET program load other code as it starts,
+  have no effect on it. Its built-in memory manager still reads a few `DOTNET_GC...`
+  tuning settings.
 - **Variables in `--run` arguments.** A `.bat` or `.cmd` program is started through
   Command Prompt, which expands `%NAME%` in its arguments. A value you did not expect can
   change what that command does.
