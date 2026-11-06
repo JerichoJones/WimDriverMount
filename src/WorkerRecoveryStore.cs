@@ -452,7 +452,17 @@ internal static partial class WorkerRecoveryStore
     private static extern bool GetUserProfileDirectoryW(IntPtr token, [Out] char[]? profile, ref uint size);
 
     private const string StoreFolderName = "WimDriverMount";
-    private const string StoreFolderSddl = "O:BAD:PAI(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BU)";
+    private const string StoreFolderSddl = ProgramInstall.SafeFolder;
+
+    internal static string StoreFolderPath() => System.IO.Path.Combine(ProgramDataPath(), StoreFolderName);
+
+    // --install (always elevated) makes the store folder before any user can
+    // make one first; one that is already there must pass the same checks.
+    internal static void PrepareStoreFolder()
+    {
+        using var handles = new DirectoryHandles(StoreFolderPath());
+        OpenStoreAncestors(handles, StoreFolderPath(), driverJournal: true, create: true);
+    }
 
     private static string ProgramDataPath()
     {
@@ -465,7 +475,7 @@ internal static partial class WorkerRecoveryStore
     private static string GetRecoveryBasePath(bool driverJournal, bool legacyDriverJournal = false)
     {
         string folder;
-        if (!(driverJournal && legacyDriverJournal)) folder = System.IO.Path.Combine(ProgramDataPath(), StoreFolderName);
+        if (!(driverJournal && legacyDriverJournal)) folder = StoreFolderPath();
         else
         {
             using var identity = WindowsIdentity.GetCurrent();
@@ -532,22 +542,33 @@ internal static partial class WorkerRecoveryStore
     // run, with StoreFolderSddl in the same call, and refused unless only
     // Administrators and SYSTEM can change it. One that another account made first
     // is refused, never repaired: a handle it opened earlier keeps its access.
-    internal static void OpenStoreAncestors(DirectoryHandles handles, string basePath, bool driverJournal, bool create, bool pin = false)
+    // storeFolder is for the regression test only; everyone else gets the real one.
+    internal static void OpenStoreAncestors(DirectoryHandles handles, string basePath, bool driverJournal, bool create, string? storeFolder = null)
     {
         string root = System.IO.Path.GetPathRoot(basePath) ?? throw new IOException("Recovery storage has no root.");
-        bool shared = string.Equals(basePath, System.IO.Path.Combine(ProgramDataPath(), StoreFolderName), StringComparison.OrdinalIgnoreCase);
+        bool shared = string.Equals(basePath, storeFolder ?? StoreFolderPath(), StringComparison.OrdinalIgnoreCase);
         string current = root;
-        handles.Add(OpenDirectory(current, false, rejectReparseWrites: driverJournal, pinAgainstRename: driverJournal || pin));
+        handles.Add(OpenDirectory(current, false, rejectReparseWrites: driverJournal, pinAgainstRename: driverJournal));
         string[] parts = basePath[root.Length..].Split('\\', StringSplitOptions.RemoveEmptyEntries);
         for (int i = 0; i < parts.Length; i++)
         {
             current = System.IO.Path.Combine(current, parts[i]);
-            if (shared && i == parts.Length - 1 && create && Elevated) CreateStoreFolder(current);
-            SafeFileHandle handle = OpenDirectory(current, false, rejectReparseWrites: driverJournal, pinAgainstRename: driverJournal || pin);
+            bool last = shared && i == parts.Length - 1;
+            if (last && create && Elevated) CreateStoreFolder(current);
+            SafeFileHandle handle;
+            try { handle = OpenDirectory(current, false, rejectReparseWrites: driverJournal, pinAgainstRename: driverJournal); }
+            // Another account made it, or a file or junction has its name. Missing is not caught.
+            catch (Exception ex) when (last && (ex is UnauthorizedAccessException or IOException || ex is Win32Exception { NativeErrorCode: 5 }))
+            {
+                throw new UnauthorizedAccessException($"{ex.Message} {StoreFolderRemedy(current)}", ex);
+            }
             handles.Add(handle);
-            if (shared && i == parts.Length - 1) RequireStoreFolderSecurity(handle, current);
+            if (last) RequireStoreFolderSecurity(handle, current);
         }
     }
+
+    private static string StoreFolderRemedy(string path) =>
+        $"Background mounts and driver installs cannot keep their records in {SafeText.Path(path)}. An administrator should check it and delete it; the program then makes it again.";
 
     private static void CreateStoreFolder(string path)
     {
@@ -570,14 +591,14 @@ internal static partial class WorkerRecoveryStore
         var administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
         RawSecurityDescriptor security = ReadSecurity(handle);
         if (security.Owner is not { } owner || !(owner.Equals(system) || owner.Equals(administrators)))
-            throw new UnauthorizedAccessException($"{SafeText.Path(path)} is owned by {Principal(security.Owner)}, not Administrators, so background mounts and driver installs cannot keep their records there. An administrator should check it and delete it; the program then makes it again.");
+            throw new UnauthorizedAccessException($"{SafeText.Path(path)} is owned by {Principal(security.Owner)}, not Administrators. {StoreFolderRemedy(path)}");
         foreach (GenericAce entry in security.DiscretionaryAcl!)
         {
             // RequireTrustedDirectorySecurity already refused every other kind of entry.
             if (entry is not CommonAce ace || ace.AceType != AceType.AccessAllowed || (ace.AceFlags & AceFlags.InheritOnly) != 0) continue;
             if (ace.SecurityIdentifier.Equals(system) || ace.SecurityIdentifier.Equals(administrators)) continue;
             if ((unchecked((uint)ace.AccessMask) & ~0x1200a9u) != 0)
-                throw new UnauthorizedAccessException($"{SafeText.Path(path)} can be changed by {Principal(ace.SecurityIdentifier)}, so background mounts and driver installs cannot keep their records there. An administrator should check it and delete it; the program then makes it again.");
+                throw new UnauthorizedAccessException($"{SafeText.Path(path)} can be changed by {Principal(ace.SecurityIdentifier)}. {StoreFolderRemedy(path)}");
         }
     }
 

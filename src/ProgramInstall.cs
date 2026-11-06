@@ -26,7 +26,7 @@ internal static class ProgramInstall
     private static readonly string[] Folders = ["licenses", "artwork", "WimReader"];
     // The installers DokanInstaller looks for beside the program.
     private static readonly string[] DokanInstallers = ["Dokan_x64.msi", "Dokan_ARM64.msi"];
-    private const string SafeFolder = "O:BAD:PAI(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BU)";
+    internal const string SafeFolder = "O:BAD:PAI(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BU)";
 
     internal static string DefaultFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "WimDriverMount");
 
@@ -37,6 +37,8 @@ internal static class ProgramInstall
         if (string.Equals(Path.GetFullPath(source), target, StringComparison.OrdinalIgnoreCase))
             throw new IOException($"This copy is already in {SafeText.Path(target)}. Run --install from the copy you want to install.");
         var files = SourceFiles(source);
+        // Before any change here: a store folder another account made first stops the install, with what to do.
+        WorkerRecoveryStore.PrepareStoreFolder();
 
         string installed = Path.Combine(target, ProgramName);
         string? reinstall = null;
@@ -199,6 +201,9 @@ internal static class ProgramInstall
         if (!keepFolder && onlyPending) DeleteAtRestart(target);
         else if (!keepFolder && pending is null) DeleteIfEmpty(target);
         if (keepFolder) output.WriteLine($"The folder {SafeText.Path(target)} is kept: other accounts can create folders in {SafeText.Path(parent)}, and could put a program of their own where a menu still points.");
+        // Kept: it holds every account's records and journals, and a new one could be made by anyone first.
+        string store = WorkerRecoveryStore.StoreFolderPath();
+        if (Directory.Exists(store)) output.WriteLine($"The folder {SafeText.Path(store)} is kept: it holds each account's background-mount records and driver-install journals, and only administrators can change it.");
         output.WriteLine(pending is not null
             ? $"Removed WIM Driver Mount from {SafeText.Path(target)}. The running program is removed when Windows restarts" +
               (onlyPending && !keepFolder ? ", with its folder." : onlyPending ? "." : "; files it did not install were left there.")

@@ -54,7 +54,7 @@ internal static partial class WorkerRecoveryStore
         string privatePath = System.IO.Path.Combine(basePath, "WimDrive-DriverJournal-" + sid.Value);
         string operationPath = System.IO.Path.Combine(privatePath, operationId.ToString("N"));
         using var parents = new DirectoryHandles(privatePath);
-        OpenStoreAncestors(parents, basePath, driverJournal: true, create: false, pin: true);
+        OpenStoreAncestors(parents, basePath, driverJournal: true, create: false);
         SafeFileHandle privateDir = OpenDirectory(privatePath, true, rejectReparseWrites: true, pinAgainstRename: true);
         parents.Add(privateDir);
         // Journals are written without an integrity label, so an elevated
