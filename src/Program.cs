@@ -1139,7 +1139,11 @@ internal static class Program
 
     private static char SelectDrive(string? requested)
     {
-        HashSet<char> elsewhere = DriveLetters.UsedElsewhere(IsAdministrator());
+        bool administrator = IsAdministrator();
+        HashSet<char> elsewhere = DriveLetters.UsedElsewhere(administrator, out bool skipped);
+        // The non-elevated pick is checked again by the elevated copy, which warns.
+        if (skipped && administrator)
+            Console.Error.WriteLine("WARNING: Another sign-in session does not let administrators see its drive letters. If it uses the letter chosen here, that session will not see this drive.");
         if (requested is not null)
         {
             char selected = MountOptions.ParseDriveLetter(requested);
