@@ -7,12 +7,14 @@ using Microsoft.Win32;
 internal static class DriveLetters
 {
     private const int AccessDenied = unchecked((int)0xC0000022), NotFound = unchecked((int)0xC0000034), NoMoreEntries = unchecked((int)0x8000001A), MoreEntries = 0x105;
+    private const uint DirectoryQuery = 1, DirectoryTraverse = 2, SymbolicLinkQuery = 1;
 
     [StructLayout(LayoutKind.Sequential)] private struct UnicodeString { public ushort Length, MaximumLength; public IntPtr Buffer; }
     [StructLayout(LayoutKind.Sequential)] private struct ObjectAttributes { public int Length; public IntPtr RootDirectory, ObjectName; public uint Attributes; public IntPtr SecurityDescriptor, SecurityQualityOfService; }
     [StructLayout(LayoutKind.Sequential)] private struct DirectoryEntry { public UnicodeString Name, TypeName; }
 
     [DllImport("ntdll.dll")] private static extern int NtOpenDirectoryObject(out IntPtr handle, uint access, ref ObjectAttributes attributes);
+    [DllImport("ntdll.dll")] private static extern int NtOpenSymbolicLinkObject(out IntPtr handle, uint access, ref ObjectAttributes attributes);
     [DllImport("ntdll.dll")] private static extern int NtQueryDirectoryObject(IntPtr handle, IntPtr buffer, int length, byte single, byte restart, ref uint context, out int returned);
     [DllImport("ntdll.dll")] private static extern int NtClose(IntPtr handle);
 
@@ -32,12 +34,27 @@ internal static class DriveLetters
             return used;
         }
         const string root = @"\Sessions\0\DosDevices";
-        foreach (string session in Names(root, required: true)!)
+        foreach (string session in Names(root))
         {
-            List<string>? names = Names($@"{root}\{session}", required: false);
-            if (names is null) { skipped = true; continue; }
-            foreach (string name in names)
-                if (name.Length == 2 && name[1] == ':' && char.ToUpperInvariant(name[0]) is >= 'A' and <= 'Z' and char letter) used.Add(letter);
+            // Each session's directory is its user's to fill, so it is never listed: the kernel
+            // walks it from the start on every query call, and 100k names stalled every mount
+            // for 62 s on 0.9.3. Only A: to Z: matter, so look those up by name: 26 lookups,
+            // whatever else is there.
+            int status = Open(IntPtr.Zero, $@"{root}\{session}", DirectoryTraverse, link: false, out IntPtr directory);
+            if (status == NotFound) continue; // signed out while listed
+            if (status != 0) { skipped = true; continue; }
+            try
+            {
+                for (char letter = 'A'; letter <= 'Z'; letter++)
+                {
+                    // Anything but "not found" means a name is there (a link, another object
+                    // type, or one closed to administrators): the letter is taken.
+                    status = Open(directory, $"{letter}:", SymbolicLinkQuery, link: true, out IntPtr found);
+                    if (status == 0) NtClose(found);
+                    if (status != NotFound) used.Add(letter);
+                }
+            }
+            finally { NtClose(directory); }
         }
         using (RegistryKey users = Registry.Users)
             foreach (string sid in users.GetSubKeyNames())
@@ -59,26 +76,30 @@ internal static class DriveLetters
         catch (Exception e) when (e is System.Security.SecurityException or UnauthorizedAccessException or IOException) { return false; }
     }
 
-    // The root (\Sessions\0\DosDevices, the system's) must be readable, else this throws. A
-    // session directory that is gone (signed out while listed) is empty; one that cannot be
-    // opened or listed (its user may deny administrators) is null.
-    private static List<string>? Names(string path, bool required)
+    // Opens a directory or symbolic link by name, relative to `root` when it is not zero.
+    private static int Open(IntPtr root, string path, uint access, bool link, out IntPtr handle)
     {
-        var names = new List<string>();
-        IntPtr text = Marshal.StringToHGlobalUni(path), name = Marshal.AllocHGlobal(Marshal.SizeOf<UnicodeString>()), buffer = IntPtr.Zero, handle = IntPtr.Zero;
+        IntPtr text = Marshal.StringToHGlobalUni(path), name = Marshal.AllocHGlobal(Marshal.SizeOf<UnicodeString>());
         try
         {
             Marshal.StructureToPtr(new UnicodeString { Length = (ushort)(path.Length * 2), MaximumLength = (ushort)(path.Length * 2), Buffer = text }, name, false);
-            var attributes = new ObjectAttributes { Length = Marshal.SizeOf<ObjectAttributes>(), ObjectName = name, Attributes = 0x40 }; // OBJ_CASE_INSENSITIVE
-            int status = NtOpenDirectoryObject(out handle, 1, ref attributes); // DIRECTORY_QUERY
-            if (status == NotFound && !required) return names;
-            if (status != 0 && !required) return null;
-            if (status != 0) throw new IOException($"Cannot check which drive letters other sign-ins use ({path}: 0x{status:X8}{(status == AccessDenied ? ", access denied" : "")}).");
-            // Many entries per call: the kernel walks the directory from its start on every call,
-            // and any standard user can fill their own session's directory, so one entry per call
-            // stalled every mount (100k names: 62 s on 0.9.3). Batching makes far fewer calls.
-            // 128 KiB holds any single entry (a name is at most 64 KiB), so a long name any user
-            // can create is read, not reported as an unreadable session.
+            var attributes = new ObjectAttributes { Length = Marshal.SizeOf<ObjectAttributes>(), RootDirectory = root, ObjectName = name, Attributes = 0x40 }; // OBJ_CASE_INSENSITIVE
+            return link ? NtOpenSymbolicLinkObject(out handle, access, ref attributes) : NtOpenDirectoryObject(out handle, access, ref attributes);
+        }
+        finally { Marshal.FreeHGlobal(name); Marshal.FreeHGlobal(text); }
+    }
+
+    // Names in the system's \Sessions\0\DosDevices: one directory per logon session, made by the
+    // system, so a short list. It must be readable, else this throws.
+    private static List<string> Names(string path)
+    {
+        var names = new List<string>();
+        IntPtr buffer = IntPtr.Zero;
+        int status = Open(IntPtr.Zero, path, DirectoryQuery, link: false, out IntPtr handle);
+        if (status != 0) throw new IOException($"Cannot check which drive letters other sign-ins use ({path}: 0x{status:X8}{(status == AccessDenied ? ", access denied" : "")}).");
+        try
+        {
+            // 128 KiB holds any single entry (a name is at most 64 KiB).
             const int size = 0x20000;
             buffer = Marshal.AllocHGlobal(size);
             uint context = 0;
@@ -87,7 +108,6 @@ internal static class DriveLetters
             {
                 status = NtQueryDirectoryObject(handle, buffer, size, 0, restart, ref context, out _);
                 if (status == NoMoreEntries) return names;
-                if (status != 0 && status != MoreEntries && !required) return null;
                 if (status != 0 && status != MoreEntries) throw new IOException($"Cannot list {path} (0x{status:X8}).");
                 // The entries end with an all-zero one; their names follow them in the buffer.
                 int before = names.Count;
@@ -99,14 +119,13 @@ internal static class DriveLetters
                 }
                 if (status == 0) return names;
                 // More to come but nothing returned: stop rather than ask forever.
-                if (names.Count == before && !required) return null;
                 if (names.Count == before) throw new IOException($"Cannot list {path} (no entries returned).");
             }
         }
         finally
         {
-            if (handle != IntPtr.Zero) NtClose(handle);
-            Marshal.FreeHGlobal(buffer); Marshal.FreeHGlobal(name); Marshal.FreeHGlobal(text);
+            NtClose(handle);
+            Marshal.FreeHGlobal(buffer);
         }
     }
 }
