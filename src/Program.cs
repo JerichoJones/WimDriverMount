@@ -1147,7 +1147,7 @@ internal static class Program
             bool here = IsAssigned(selected);
             if (here || elsewhere.Contains(selected))
                 throw new IOException($"Drive {selected}: is already in use{(here ? "" : " in another sign-in session (for example a network drive mapped without administrator rights) or as a saved network drive")}. " +
-                    (fromMenu ? "Disconnect it, or mount from a console with --wim and --drive." : "Choose another letter, or leave --drive out to use the highest free one."));
+                    (fromMenu ? "Mount from a console with --wim; it picks a letter no sign-in uses." : "Choose another letter, or leave --drive out to use the highest free one."));
             return selected;
         }
         for (char c = 'Z'; c >= 'D'; c--)
