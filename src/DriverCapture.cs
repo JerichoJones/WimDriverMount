@@ -6,8 +6,7 @@
 // extension INF, with their CopyINF sub-packages and print-queue drivers. Packages only
 // app-made devices or services use are left out and named; so are superseded versions. Only new WIMs are written; an existing file is refused
 // (a failed append would leave dead bytes in it). Compression: none, fast (XPRESS) or
-// maximum (LZX), the kinds the reader already handles. Findings behind each step are in
-// WIMDriveMount-private\RESEARCH-0.8.0-driver-capture.md.
+// maximum (LZX), the kinds the reader already handles.
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
