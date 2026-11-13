@@ -606,7 +606,7 @@ internal static class Program
                 Console.Error.WriteLine("WIM Driver Mount: " + SafeText.Message(ex.Message));
                 return 1;
             }
-            // The preview only reads, as --preview-drivers does; writing needs administrator rights.
+            // The preview only reads; writing needs administrator rights.
             if (!whatIf && !IsAdministrator())
                 return RequestElevation(["--capture-drivers", target, "--compression", compression.ToString().ToLowerInvariant()]);
             return DriverCapture.Run(target, compression, whatIf, Console.Out, Console.Error);
@@ -671,14 +671,10 @@ internal static class Program
                 args[dokanAt + 1] = dokanResolved;
                 installerUrl = dokanResolved;
             }
-            // The preview reads the WIM and device inventory only; it needs no elevation or mount.
-            if (!previewDrivers && !IsAdministrator()) return RequestElevation(args);
-            // A token file is readable by administrators only (the README says why).
-            if (previewDrivers && parsed.TokenFile is not null && !IsAdministrator())
-            {
-                Console.WriteLine(AsTyped("--preview-drivers with --wim-token-file asks for administrator rights: only administrators can read the token file."));
-                return RequestElevation(args);
-            }
+            // The preview too: Windows ranks a driver from a copy of its INF and
+            // catalog in a folder only administrators can write, as an install does,
+            // so the preview gives the install's answers (Jericho, 2026-11-13).
+            if (!IsAdministrator()) return RequestElevation(args);
             if (!whatIf && !previewDrivers) state.EventOperation = installDrivers ? "driver" : background ? "background-start" : "mount";
             path = web ? wimUri!.AbsoluteUri : Path.GetFullPath(path);
             if (whatIf)
@@ -1178,7 +1174,7 @@ internal static class Program
     {
         bool administrator = IsAdministrator();
         HashSet<char> elsewhere = DriveLetters.UsedElsewhere(administrator, out bool skipped);
-        warn &= administrator; // unelevated, only the preview gets here
+        warn &= administrator; // never warn unelevated
         if (skipped && warn)
             Console.Error.WriteLine("WARNING: Another sign-in session does not let administrators see its drive letters. If it uses the letter chosen here, that session will not see this drive.");
         if (requested is not null)
@@ -1399,7 +1395,7 @@ internal static class Program
             Console.WriteLine("  Operations request administrator rights when needed.\n");
             return;
         }
-        Console.WriteLine($"WIM Driver Mount {version} - mounts WIM images as read-only drives\nOperations request administrator rights when needed.\nHelp, version, driver preview and journal inspection do not request administrator rights.\nAuthor: Jericho Jones\nLicense: MIT; third-party notices are in the licenses folder.\n");
+        Console.WriteLine($"WIM Driver Mount {version} - mounts WIM images as read-only drives\nOperations request administrator rights when needed.\nHelp, version and journal inspection do not request administrator rights.\nAuthor: Jericho Jones\nLicense: MIT; third-party notices are in the licenses folder.\n");
     }
 
     private static void Usage() => Console.WriteLine("""
@@ -1512,8 +1508,8 @@ Options:
   --inspect-driver-journal <ID>  Show what a driver install recorded. Read-only.
   --inspect-legacy-driver-journal <ID>  The same, for one kept by 0.8.0-0.9.0 in AppData.
   --preview-drivers      Show the driver --install-drivers would choose for each device.
-                         Reads the WIM only: no mount, Dokan, elevation or installation.
-                         With --wim-token-file it asks for administrator rights.
+                         Reads the WIM only: no mount, Dokan or installation.
+                         Asks for administrator rights, as --install-drivers does.
   --no-install-dokan     Do not install a missing Dokan prerequisite.
   --log <path>           Append this run's messages, with the time, to a text file in
                          an existing folder. A background mount keeps writing there,

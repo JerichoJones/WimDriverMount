@@ -61,8 +61,9 @@ every signed driver ranks the same and an unsigned one ranks below them all. Whi
 off, a Microsoft-signed driver (inbox or WHQL) ranks above an Authenticode-signed one,
 even an older one, and even if the other matches the device better. Who signed a package
 is known only once its catalog is checked, so wherever the signer could change the
-decision, Windows is asked to rank that driver itself: only the package's INF and
-catalogs are copied from the WIM, to a temporary folder removed afterwards. A device the
+decision, Windows is asked to rank that driver itself: only the package's INF and the
+one catalog it names are copied from the WIM, to a folder under System32 that only
+administrators can open, removed afterwards. A device the
 signer cannot affect costs nothing extra. Extensions are still ranked without the
 signer: Windows does not rank them the same way. Windows checks every signature and does
 the installation itself. If it refuses a package (a broken or tampered catalog, say) before touching the
@@ -81,8 +82,10 @@ the next-ranked extension of the same kind is handed over, and the run still fai
 ```
 
 This lists each device the WIM has a driver for, with the decision — INSTALL, KEEP,
-SKIP, or EXTEND for an extension driver Windows would add — and the reason. It only reads the WIM: no mount, no Dokan, no administrator
-prompt, no changes. When the list looks right, run the same command with
+SKIP, or EXTEND for an extension driver Windows would add — and the reason. It only reads the WIM: no mount, no Dokan, no changes.
+It asks for administrator rights, as installing does: Windows ranks each driver from a copy
+of its INF and catalog in a folder only administrators can write, so the preview gives the
+same answers the install will. When the list looks right, run the same command with
 `--install-drivers` instead (or drop the WIM on the program).
 
 **After installing** you get a driver report: each device where a driver was installed,
@@ -335,10 +338,9 @@ the token. Pasting from the clipboard keeps the token out of PowerShell's comman
 clear the clipboard afterwards, since any program running as you can read it. The token is never printed, logged or put on a command line: a background mount is
 given the file's path and reads the file itself.
 
-**Why `--preview-drivers` then asks for administrator rights.** The preview normally runs
-without them. With a token file it has to read a file only administrators can read, so it asks
-first and says why. The other way round, making the file readable by your account so the preview
-need not ask, would undo the protection above. A limit worth knowing: on the default Windows
+**The preview reads it the same way.** `--preview-drivers` asks for administrator rights like
+the other driver commands, so it can read the token file too. Making the file readable by your
+account instead would undo the protection above. A limit worth knowing: on the default Windows
 setting, a program already running as an administrator's ordinary half can sometimes get past
 the prompt without asking. So this fully protects standard user accounts and computers set to
 "Always notify". On other computers it keeps the token from programs that do not try that hard.
@@ -574,8 +576,8 @@ tried before that restart says so too while Windows reports the driver still sto
 
 Operations ask for administrator approval. Typed in a console (PowerShell, Command Prompt,
 Terminal), the work then runs hidden and its output appears in that same window: no second
-window, nothing to press, and the command returns the real exit code. `--help`, `--version`,
-`--preview-drivers` and journal inspection need no approval at all. Output redirected to a
+window, nothing to press, and the command returns the real exit code. `--help`, `--version`
+and journal inspection need no approval at all. Output redirected to a
 file (`> log.txt`) still goes to the screen this way; to capture it, run from an
 administrator console.
 

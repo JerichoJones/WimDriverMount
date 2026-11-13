@@ -25,7 +25,10 @@ internal static class FilteredDriverInstall
         // Both null means "no extensions".
         // The middle argument is the same filter as Select's.
         Func<DriverDetection.InstalledDevice, Func<InfIndex.ModelEntry, bool>, CancellationToken, IReadOnlyList<PerDeviceDriverSelection.ExtensionDecision>>? SelectExtensions = null,
-        Func<InfIndex.ModelEntry, DriverDetection.ExtensionInstallResult>? InstallExtension = null);
+        Func<InfIndex.ModelEntry, DriverDetection.ExtensionInstallResult>? InstallExtension = null,
+        // Windows' ranking, which Run disposes however it ends (its staging
+        // folder goes with it). Made from the index when Run builds its own.
+        WindowsRankSource? Ranks = null);
 
     // The JSON these write is compared and journaled, so its shape is fixed: the
     // records below list the properties in the order they have always been written.
@@ -242,7 +245,7 @@ internal static class FilteredDriverInstall
         var expected = new List<(string Instance, string? Published, InfIndex.ModelEntry Model)>();
         IReadOnlyList<DriverDetection.InstalledDevice>? after = null;
         Dependencies? api = dependencies;
-        WindowsRankSource? ranks = null;
+        WindowsRankSource? ranks = dependencies?.Ranks;
         try
         {
             void Check()

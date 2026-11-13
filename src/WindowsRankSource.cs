@@ -17,8 +17,13 @@ internal sealed class WindowsRankSource : IDisposable
     // (WimFileSystem.CollectInfFiles). Catalogs measured on a Windows 11 driver
     // store of 888 packages: one each, the largest 5.3 MiB. The run limit stops a
     // WIM that names one large catalog from many INFs (stored once, so costing it
-    // nothing) from filling the disk; capture's free-space margin is kept too.
+    // nothing) from filling the disk.
     private const long MaxInfBytes = 32L << 20, MaxCatalogBytes = 64L << 20, MaxRunBytes = 1L << 30;
+    // Each copy must leave this much free: as much again as a whole run can
+    // write, so staging never takes the drive below 1 GiB free, yet a small
+    // system drive with a couple of GiB free still ranks. (Capture's 5 GiB
+    // margin is sized for writing a WIM, not a few KB of INF and catalog.)
+    private const long FreeAfterCopy = MaxRunBytes;
     internal const string FolderPrefix = "WimDriverMount-rank-";
     private readonly WimFileSystem image;
     private readonly string mount;
@@ -132,7 +137,10 @@ internal sealed class WindowsRankSource : IDisposable
             string imageFolder = Path.GetDirectoryName(imageInf) ?? "\\";
             if (Folder is not { } staging) throw new IOException("The folder used to rank drivers is unavailable.");
             // Made inside the private folder, so it inherits its permissions.
+            // Numbered names are never reused, so anything already there (a
+            // junction or link included) is refused, never followed.
             string target = Path.Combine(staging, staged.Count.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            if (Path.Exists(target)) throw new IOException("The folder used to rank a driver already exists.");
             Directory.CreateDirectory(target);
             string inf = Path.Combine(target, Path.GetFileName(imageInf));
             Copy(imageInf, inf, MaxInfBytes);
@@ -155,16 +163,28 @@ internal sealed class WindowsRankSource : IDisposable
         return result;
     }
 
-    private void Copy(string imagePath, string destination, long maxBytes)
+    // Into a new file only, refusing any name already there. A plain CreateNew
+    // follows a symbolic link to a file not there yet and creates its target, so
+    // the link itself is opened (FILE_FLAG_OPEN_REPARSE_POINT), as the recovery
+    // store's records are.
+    internal void Copy(string imagePath, string destination, long maxBytes)
     {
+        const uint GenericWrite = 0x40000000, CreateNew = 1, OpenReparsePoint = 0x00200000;
         long length = image.GetFileLength(imagePath);
         if (length > maxBytes) throw new InvalidDataException("File is too large to rank.");
         if (copied + length > MaxRunBytes) throw new InvalidDataException("Too much has been copied to rank drivers in this run.");
-        if (new DriveInfo(Path.GetPathRoot(destination)!).AvailableFreeSpace < length + DriverCapture.Margin)
+        if (new DriveInfo(Path.GetPathRoot(destination)!).AvailableFreeSpace < length + FreeAfterCopy)
             throw new IOException("Not enough free space to rank drivers.");
         copied += length;
         using var source = image.OpenFile(imagePath, FileMode.Open, FileAccess.Read);
-        using var target = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        var handle = TrustedFile.OpenFileW(destination, GenericWrite, 0, IntPtr.Zero, CreateNew, OpenReparsePoint, IntPtr.Zero);
+        if (handle.IsInvalid)
+        {
+            int error = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+            handle.Dispose();
+            throw new IOException("A file used to rank drivers could not be created: " + new Win32Exception(error).Message);
+        }
+        using var target = new FileStream(handle, FileAccess.Write);
         byte[] buffer = new byte[81920];
         long total = 0;
         for (int read; (read = source.Read(buffer)) > 0;)
@@ -178,7 +198,20 @@ internal sealed class WindowsRankSource : IDisposable
     public void Dispose()
     {
         held?.Dispose();
-        try { if (folder is not null && Directory.Exists(folder)) Directory.Delete(folder, recursive: true); }
+        try { if (folder is not null && Directory.Exists(folder)) DeleteTree(folder); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+    }
+
+    // A link is removed as a link, never entered. Directory.Delete(recursive)
+    // removes a junction too, but first tries it as a volume mount point, fails
+    // with "The parameter is incorrect" and leaves the folder behind.
+    private static void DeleteTree(string path)
+    {
+        foreach (var entry in new DirectoryInfo(path).EnumerateFileSystemInfos())
+        {
+            if (entry is DirectoryInfo directory && (directory.Attributes & FileAttributes.ReparsePoint) == 0) DeleteTree(directory.FullName);
+            else entry.Delete();
+        }
+        Directory.Delete(path);
     }
 }
