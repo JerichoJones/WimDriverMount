@@ -2,7 +2,7 @@
 
 # WIM Driver Mount
 
-Version 0.8.0 · Jericho Jones · MIT (third-party notices in `licenses`).
+Version 0.10.0 · Jericho Jones · MIT (third-party notices in `licenses`).
 
 WIM Driver Mount mounts a WIM image as a read-only drive, without extracting it, from a
 local disk, a network share, or an HTTP/HTTPS server. It can also run a program straight
@@ -122,8 +122,8 @@ To keep this PC's drivers, for a reinstall or for another PC of the same model:
 ```
 
 The first command lists what it would take and what it would leave out, and checks the
-free space; it writes nothing. The second writes a new WIM with Windows' own WIM library
-(`wimgapi.dll`). It needs administrator rights.
+free space; it writes nothing, and does not ask for administrator rights. The second writes
+a new WIM with Windows' own WIM library (`wimgapi.dll`). It needs administrator rights.
 
 **What it takes:** the third-party driver packages (the `oemNN.inf` ones in Windows' driver
 store) that this PC's hardware uses:
@@ -173,7 +173,7 @@ At the end it prints the WIM's SHA-256 and the command that installs from it on 
 refusing the file if it has changed since:
 
 ```
-.\WimDriverMount.exe --wim 'C:\Drivers\this-pc.wim' --wim-sha256 <hash> --install-drivers
+.\WimDriverMount.exe --wim C:\Drivers\this-pc.wim --wim-sha256 <hash> --install-drivers
 ```
 
 How it was checked: in a test VM, the packages it captured were identical, file for file,
@@ -496,9 +496,9 @@ who could write it before could have changed it, so read what it says. It refuse
   and file instead. Permissions tightened by hand earlier, while someone held such a
   handle, cannot be detected;
 - a file not on an internal disk (see above);
-- a folder reached through a link or junction;
-- a drive root; anything inside Windows or Program Files; ProgramData and Temp
-  themselves; a user profile, or any folder directly in one (`C:\Users\<name>\Config` too);
+- a file or folder reached through a link or junction, or a file with other names (hard links);
+- a drive root; anything inside Windows or Program Files; ProgramData, Temp and your
+  AppData folders themselves; a user profile, or any folder directly in one (`C:\Users\<name>\Config` too);
 - a folder that holds other folders.
 
 Give the settings file a folder of its own, such as `C:\Config`.
@@ -511,7 +511,7 @@ Give the settings file a folder of its own, such as `C:\Config`.
 | After a restart, a drive letter is "in use" by an old mount | `.\WimDriverMount.exe --unmount M:` clears the leftover record. A new background mount on M: also clears it when the old mount has provably ended, says so, and reports how that mount left Dokan |
 | `--unmount M:` says to, or a new mount on M: says it already has a background mount record that `--unmount M:` does not clear | `.\WimDriverMount.exe --resume-worker-cleanup M:` |
 | You want to see what an interrupted driver install recorded | `.\WimDriverMount.exe --inspect-driver-journal <ID>`, with the ID printed when the install started |
-| The journal is in ProgramData | `.\WimDriverMount.exe --inspect-legacy-driver-journal <ID>` |
+| The install ran on version 0.8.0 to 0.9.0, which kept journals in AppData | `.\WimDriverMount.exe --inspect-legacy-driver-journal <ID>` |
 
 Journal inspection only reads, and never retries anything. It says whether the journal is
 consistent, how many calls finished, whether one was left unfinished and whether a restart
@@ -576,8 +576,8 @@ tried before that restart says so too while Windows reports the driver still sto
 
 Operations ask for administrator approval. Typed in a console (PowerShell, Command Prompt,
 Terminal), the work then runs hidden and its output appears in that same window: no second
-window, nothing to press, and the command returns the real exit code. `--help`, `--version`
-and journal inspection need no approval at all. Output redirected to a
+window, nothing to press, and the command returns the real exit code. `--help`, `--version`,
+journal inspection and `--capture-drivers ... --whatif` need no approval at all. Output redirected to a
 file (`> log.txt`) still goes to the screen this way; to capture it, run from an
 administrator console.
 
@@ -608,7 +608,8 @@ Exit codes:
 
 `--whatif` checks a command without mounting or installing anything: it opens the WIM
 read-only, reads the chosen image, checks Dokan, and says what it would do. It still asks
-for administrator approval, and cannot be combined with `--run`.
+for administrator approval (only `--capture-drivers --whatif` does not), and cannot be
+combined with `--run`.
 
 ## Known limits: your own environment variables and console
 
