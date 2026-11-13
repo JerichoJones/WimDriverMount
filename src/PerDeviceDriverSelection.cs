@@ -10,8 +10,18 @@ internal static class PerDeviceDriverSelection
     internal const string NoCandidate = "The WIM has no driver for this device.", NotNewer = "The installed driver is as new or newer.",
         Outranked = "The installed driver is a better match.";
 
+    // Windows' own full ranks, signer score included (DriverRanking.cs); null
+    // when Windows could not rank that driver. Candidate also gets the model's
+    // CandidateRank. SignerFloor: the lowest signer score Windows gives any
+    // driver in the current policy state, so no rank is below estimate + floor.
+    // InstalledAsEstimated: the bound driver's rank is known to equal its
+    // estimate + floor without asking (WindowsRankSource says when).
+    internal sealed record WindowsRanks(Func<DriverDetection.InstalledDevice, uint?> Installed,
+        Func<DriverDetection.InstalledDevice, InfIndex.ModelEntry, uint, uint?> Candidate,
+        Func<DriverDetection.InstalledDevice, bool> InstalledAsEstimated, uint SignerFloor = 0);
+
     internal static Decision Select(DriverDetection.InstalledDevice device,
-        IReadOnlyList<InMemoryDriverMatcher.Match> matches, bool indexComplete)
+        IReadOnlyList<InMemoryDriverMatcher.Match> matches, bool indexComplete, WindowsRanks? windows = null)
     {
         // Without trustworthy IDs, neither a match nor its absence is known.
         if (device.IdsUncertain) return new(null, "Device IDs could not be read.");
@@ -30,23 +40,84 @@ internal static class PerDeviceDriverSelection
         if (candidates.Any(match => match.Model.DriverVersion?.Date is null || match.Model.DriverVersion.Version is null))
             return new(null, "A matching WIM driver has no date (DriverVer), so it cannot be compared.");
 
-        var (winners, bestRank, newestDate, newestVersion) = Rank(candidates);
-        string tie = Tie(winners.Length, "candidates");
+        // The device property never carries the bound driver's signer byte, so
+        // this is its rank without one, as CandidateRank is for a candidate.
+        uint? installedEstimate = device.Rank is uint fullRank ? fullRank & 0x00FFFFFF : null;
+        if (windows is null) return Decide(device, candidates, CandidateRank, installedEstimate, installedDate, installedVersion, signed: false);
+
+        // Windows' rank is the estimate plus a signer score of at least the
+        // floor, never less. So the decision is first made with every rank
+        // Windows has not yet given at that lowest value, and Windows is asked
+        // only where its answer could overturn it: an install, by the chosen
+        // candidates being worse; a keep, by the installed driver being worse.
+        // Each answer is kept, so this ends.
+        uint floor = windows.SignerFloor;
+        uint Estimate(InMemoryDriverMatcher.Match match) => CandidateRank(match) | floor;
+        var known = new Dictionary<InMemoryDriverMatcher.Match, uint>(ReferenceEqualityComparer.Instance);
+        uint RankOf(InMemoryDriverMatcher.Match match) => known.TryGetValue(match, out uint rank) ? rank : Estimate(match);
+        uint? installedLowest = installedEstimate is uint low ? low | floor : null;
+        uint? installedRank = installedLowest;
+        bool installedKnown = device.Unbound || (installedLowest is not null && windows.InstalledAsEstimated(device));
+        bool everything = false;
+        bool AskInstalled()
+        {
+            uint? rank = windows.Installed(device);
+            // Below its lowest possible value: the shortcut's premise fails for this device.
+            if (rank is uint r && installedLowest is uint e && r < e) everything = true;
+            installedRank = rank;
+            installedKnown = true;
+            return rank is not null;
+        }
+        bool AskCandidate(InMemoryDriverMatcher.Match match)
+        {
+            if (windows.Candidate(device, match.Model, CandidateRank(match)) is not uint rank) return false;
+            if (rank < Estimate(match)) everything = true;
+            known[match] = rank;
+            return true;
+        }
+        while (true)
+        {
+            if (!installedKnown && (installedRank is null || everything) && !AskInstalled()) return new(null, CannotRankInstalled);
+            if (everything && candidates.Any(match => !known.ContainsKey(match)))
+            {
+                // Windows disagreed with the INF-only rank, so nothing is assumed: every rank comes from Windows.
+                foreach (var match in candidates.Where(match => !known.ContainsKey(match)))
+                    if (!AskCandidate(match)) return new(null, CannotRankCandidate);
+                continue;
+            }
+            var decision = Decide(device, candidates, RankOf, installedRank, installedDate, installedVersion, signed: true);
+            if (decision.Candidate is not null)
+            {
+                uint best = candidates.Min(RankOf);
+                var unasked = candidates.Where(match => RankOf(match) == best && !known.ContainsKey(match)).ToArray();
+                if (unasked.Length == 0) return decision;
+                foreach (var match in unasked)
+                    if (!AskCandidate(match)) return new(null, CannotRankCandidate);
+            }
+            else if (!installedKnown)
+            {
+                if (!AskInstalled()) return new(null, CannotRankInstalled);
+            }
+            else return decision;
+        }
+    }
+
+    private const string CannotRankInstalled = "Windows could not rank the installed driver, so nothing was chosen.",
+        CannotRankCandidate = "Windows could not rank a matching WIM driver, so nothing was chosen.";
+
+    private static Decision Decide(DriverDetection.InstalledDevice device, IReadOnlyList<InMemoryDriverMatcher.Match> candidates,
+        Func<InMemoryDriverMatcher.Match, uint> rankOf, uint? installedRank, DateOnly installedDate, ulong installedVersion, bool signed)
+    {
+        var (winners, bestRank, newestDate, newestVersion) = Rank(candidates, rankOf);
+        string tie = Tie(winners.Length, "candidates", signed);
         if (device.Unbound) return new(winners[0], "No driver is installed yet." + tie);
 
-        // Compare against Windows' own rank for the bound driver when it gave us
-        // one. Lower is better; at equal rank DriverVer decides, as in Windows.
-        // Windows' figure carries the bound package's real signer score in its
-        // top byte; a candidate's is assumed 00 (CandidateRank). So only the parts
-        // both sides know are compared. Comparing all of it would make every driver
-        // signed below WHQL lose to an older candidate: a downgrade, then the
-        // same install again on every run. The cost: an older WHQL candidate is
-        // not preferred over a newer non-WHQL driver, as Windows would.
-        if (device.Rank is uint fullRank)
+        // Compare against Windows' own rank for the bound driver. Lower is
+        // better; at equal rank DriverVer decides, as in Windows.
+        if (installedRank is uint installed)
         {
-            uint installedRank = fullRank & 0x00FFFFFF;
-            if (installedRank < bestRank) return new(null, Outranked);
-            if (installedRank > bestRank)
+            if (installed < bestRank) return new(null, Outranked);
+            if (installed > bestRank)
                 return new(winners[0], "The WIM driver is a better match than the installed one." + tie);
         }
 
@@ -59,19 +130,17 @@ internal static class PerDeviceDriverSelection
     // Windows can select any driver package." Driver packs often ship one
     // driver in several per-OS folders, so refusing a tie would leave the
     // device without a driver Windows itself would install. Winners are in
-    // path order, so the same one is taken on every run. The tie is on the
-    // rank this tool can read (CandidateRank): if the tied packages are signed
-    // differently, Windows would prefer the better-signed one.
-    private static string Tie(int winners, string what) => winners < 2 ? "" :
-        $" {winners} equally good {what} in the WIM (same match, date and version; signing not compared); the first in path order was used.";
+    // path order, so the same one is taken on every run. Without Windows ranks
+    // the tie is on CandidateRank, which leaves signing out.
+    private static string Tie(int winners, string what, bool signed = false) => winners < 2 ? "" :
+        $" {winners} equally good {what} in the WIM (same {(signed ? "rank" : "match")}, date and version{(signed ? "" : "; signing not compared")}); the first in path order was used.";
 
     // Windows' driver rank is 0xSSGGTHHH: signer score, the INF's FeatureScore
     // (0xFF when absent), then the identifier score; lower is better.
-    // Shortcut: the signer score needs the package's catalog, which the INF text
-    // read from the WIM does not give us, so a candidate is ranked as signer 00
-    // -- what every WHQL package measured on real hardware ranked, inbox drivers
-    // included. Windows itself still refuses an unsigned package at install.
-    // Catalogs are not verified as the WIM is read.
+    // Read from the INF text alone, so the signer score is taken as 00 -- what
+    // Windows gives every signed package while AllSigningEqual is on. Windows'
+    // own rank can only add to this, never take from it, which is what lets
+    // Select ask Windows so rarely.
     internal static uint CandidateRank(InMemoryDriverMatcher.Match match) =>
         ((uint)(match.Model.FeatureScore ?? 0xFF) << 16) | (uint)match.IdentifierScore;
 
@@ -82,10 +151,11 @@ internal static class PerDeviceDriverSelection
     // that resolve to the same install section are the same driver, so winners
     // holds one entry, or several on a tie (see Tie), ordered by path.
     private static (InfIndex.ModelEntry[] Winners, uint Rank, DateOnly Date, ulong Version) Rank(
-        IReadOnlyList<InMemoryDriverMatcher.Match> candidates)
+        IReadOnlyList<InMemoryDriverMatcher.Match> candidates, Func<InMemoryDriverMatcher.Match, uint>? rankOf = null)
     {
-        uint bestRank = candidates.Min(CandidateRank);
-        var ranked = candidates.Where(match => CandidateRank(match) == bestRank).ToArray();
+        rankOf ??= CandidateRank;
+        uint bestRank = candidates.Min(rankOf);
+        var ranked = candidates.Where(match => rankOf(match) == bestRank).ToArray();
         DateOnly newestDate = ranked.Max(match => match.Model.DriverVersion!.Date!.Value);
         ulong newestVersion = ranked.Where(match => match.Model.DriverVersion!.Date == newestDate)
             .Max(match => match.Model.DriverVersion!.Version!.Value);

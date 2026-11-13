@@ -26,6 +26,10 @@ internal sealed class InfCollectedIndex
     internal IReadOnlyList<InfIndex.ModelEntry> Models => models.AsReadOnly();
     internal IReadOnlyList<InfIndex.ModelEntry> Extensions => extensions.AsReadOnly();
     internal bool SelectionComplete => unresolved.Count == 0 && scopedUnresolved.Count == 0;
+    // The WIM the models were read from, and the root their paths start with:
+    // WindowsRankSource copies a competing package's INF and catalogs from it.
+    internal WimFileSystem? Image { get; private set; }
+    internal string? Mount { get; private set; }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct NativeOsVersion
@@ -59,7 +63,7 @@ internal sealed class InfCollectedIndex
         var version = ValidateTarget(status, target.Platform, target.ProductType, target.Major, target.Minor, target.Build);
         // Device installation selects INF strings by the system UI language, not the caller's.
         int locale = GetSystemDefaultUILanguage(), codePage = InfRawParser.CurrentAnsiCodePage();
-        var result = new InfCollectedIndex();
+        var result = new InfCollectedIndex { Image = image, Mount = mount };
         var budget = new InfRawParser.Budget(); // Retained memory is limited across the whole WIM.
         // This is the only image walk and the only WIM content read in this path.
         foreach (var file in image.CollectInfFiles(cancellation))

@@ -64,12 +64,13 @@ internal static class FilteredDriverInstall
     internal static string Outcome(DriverDetection.ExtensionInstallResult outcome) => JsonSerializer.Serialize(outcome, FilteredDriverJson.Default.ExtensionInstallResult);
 
     private static Func<DriverDetection.InstalledDevice, Func<InfIndex.ModelEntry, bool>, CancellationToken, PerDeviceDriverSelection.Decision> Selector(
-        InfCollectedIndex index, CancellationToken cancellation)
+        InfCollectedIndex index, CancellationToken cancellation, WindowsRankSource? ranks = null)
     {
         var matcher = index.CreateMatcher(cancellation);
+        var windows = ranks?.Ranks;
         return (device, allowed, token) => PerDeviceDriverSelection.Select(device,
             matcher.Find(device.HardwareIds, device.CompatibleIds, token).Where(match => allowed(match.Model)).ToList(),
-            index.IsSelectionCompleteFor(device.HardwareIds, device.CompatibleIds));
+            index.IsSelectionCompleteFor(device.HardwareIds, device.CompatibleIds), windows);
     }
 
     private static Func<DriverDetection.InstalledDevice, Func<InfIndex.ModelEntry, bool>, CancellationToken, IReadOnlyList<PerDeviceDriverSelection.ExtensionDecision>> ExtensionSelector(
@@ -104,7 +105,8 @@ internal static class FilteredDriverInstall
             output.WriteLine($"Unparsed model in {InWim(item.Path)}: {item.Reason} It blocks devices with IDs {SafeText.Path(string.Join(", ", item.Ids))}.");
         foreach (var item in index.SkippedExtensions)
             output.WriteLine($"Skipped extension INF {InWim(item.Path)}: {item.Reason} It is not applied to any device.");
-        var select = Selector(index, cancellation);
+        using var ranks = WindowsRankSource.For(index);
+        var select = Selector(index, cancellation, ranks);
         var selectExtensions = ExtensionSelector(index, cancellation);
         int devices = 0, install = 0, undecided = 0, extend = 0;
         foreach (var device in DriverDetection.CaptureInstalledDevices(cancellation))
@@ -240,6 +242,7 @@ internal static class FilteredDriverInstall
         var expected = new List<(string Instance, string? Published, InfIndex.ModelEntry Model)>();
         IReadOnlyList<DriverDetection.InstalledDevice>? after = null;
         Dependencies? api = dependencies;
+        WindowsRankSource? ranks = null;
         try
         {
             void Check()
@@ -251,7 +254,8 @@ internal static class FilteredDriverInstall
             if (api is null)
             {
                 var index = collectedIndex ?? throw new InvalidDataException("The pre-mount INF index is unavailable.");
-                api = new(DriverDetection.CaptureInstalledDevices, Selector(index, cancellation),
+                ranks = WindowsRankSource.For(index);
+                api = new(DriverDetection.CaptureInstalledDevices, Selector(index, cancellation, ranks),
                     DriverDetection.InstallSelectedDevice, CM_WaitNoPendingInstallEvents, SetupSetNonInteractiveMode,
                     ExtensionSelector(index, cancellation), DriverDetection.InstallExtension);
                 foreach (var item in index.UnresolvedFiles)
@@ -536,6 +540,7 @@ internal static class FilteredDriverInstall
         catch (Exception error) { failure = error; uncertain |= inFlight; }
         finally
         {
+            ranks?.Dispose();
             if (modeSet)
                 try { api!.SetNonInteractive(previous); }
                 catch (Exception error) { failure = failure is null ? error : new AggregateException(failure, error); }

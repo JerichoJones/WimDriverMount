@@ -50,18 +50,22 @@ This and every example below works as written in both PowerShell and Command Pro
 you replace anything in `<...>` with your own value. Lines marked PowerShell are PowerShell only.
 
 It mounts the WIM, reads every INF in it once, and for each device present picks the
-driver Windows would rank best — by the driver's feature score, then how closely the
+driver Windows would rank best — by signer, the driver's feature score, how closely the
 hardware ID matches, then date and version, the order Windows uses. It installs that
 driver only where it beats the one already installed, then unmounts. Nothing restarts
 automatically.
 
-Windows also ranks by signer, but who signed a package is only known once Windows checks
-its catalog, so every package is ranked as if signed by Microsoft (as almost every
-driver package is). The installed driver's signer is likewise left out of the
-comparison, so a driver signed below Microsoft's level is replaced only by a better
-match or, at the same match, a newer one; Windows alone would also prefer an older
-Microsoft-signed match. Windows checks every signature and does the installation
-itself. If it refuses a package (a broken or tampered catalog, say) before touching the
+How much the signer counts is set by the Windows policy "Treat all digitally signed
+drivers equally", which is on unless an administrator turned it off. While it is on,
+every signed driver ranks the same and an unsigned one ranks below them all. While it is
+off, a Microsoft-signed driver (inbox or WHQL) ranks above an Authenticode-signed one,
+even an older one, and even if the other matches the device better. Who signed a package
+is known only once its catalog is checked, so wherever the signer could change the
+decision, Windows is asked to rank that driver itself: only the package's INF and
+catalogs are copied from the WIM, to a temporary folder removed afterwards. A device the
+signer cannot affect costs nothing extra. Extensions are still ranked without the
+signer: Windows does not rank them the same way. Windows checks every signature and does
+the installation itself. If it refuses a package (a broken or tampered catalog, say) before touching the
 device, that package is not tried again for any device and the next-ranked one is
 used, as Windows' own installer would; the report shows the refusal. Only Windows'
 verdict on the package counts: if the package could not be read (a share that stopped
@@ -100,8 +104,10 @@ Tips:
 
 How closely it matches Windows: compared with Windows' own results on one PC and one driver
 set, INF parsing was identical on 949 INFs, candidate lists on 260 of 260 devices, and the
-chosen driver on 127 of 127 devices (and 2 of 2 extensions). That is not a guarantee for
-every machine.
+chosen driver on 127 of 127 devices (and 2 of 2 extensions). The signer rules were checked
+the same way, in both policy states, with inbox, WHQL, Authenticode and unsigned packages:
+the chosen driver matched Windows' in 12 of 12 cases, previewing and installing. That is not
+a guarantee for every machine.
 
 ## Capture this PC's drivers into a WIM
 
