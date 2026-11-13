@@ -2,18 +2,30 @@ using System.ComponentModel;
 using DiscUtils.Wim;
 
 // Asks Windows to rank the WIM drivers that compete for a device. Windows needs
-// a package's INF on disk with its catalogs beside it to score the signature, so
-// only those files -- never the driver binaries -- are copied, for only the
-// packages a device actually compares, once each, into a private temporary
-// folder removed afterwards. The single in-memory pass over the WIM's INFs
-// still finds every device's candidates; this only orders the ones it found.
+// a package's INF on disk with its catalog beside it to score the signature, so
+// only those two files -- never the driver binaries -- are copied, for only the
+// packages a device actually compares, once each. They go into a new folder only
+// Administrators and SYSTEM can open (DokanInstaller.CreateStagingFolder), never
+// the user's temp folder, so no program without administrator rights can swap a
+// file or plant a link while Windows reads them (security review, 2026-11-13).
+// The single in-memory pass over the WIM's INFs still finds every device's
+// candidates; this only orders the ones it found.
 internal sealed class WindowsRankSource : IDisposable
 {
-    // A catalog larger than this is not copied; the package is then unrankable
-    // and its devices are left undecided rather than guessed.
-    private const int MaxCatalogBytes = 256 * 1024 * 1024;
+    // Over a limit, the package is unrankable and its devices are left undecided
+    // rather than guessed. The INF limit is the one the INF index reads under
+    // (WimFileSystem.CollectInfFiles). Catalogs measured on a Windows 11 driver
+    // store of 888 packages: one each, the largest 5.3 MiB. The run limit stops a
+    // WIM that names one large catalog from many INFs (stored once, so costing it
+    // nothing) from filling the disk; capture's free-space margin is kept too.
+    private const long MaxInfBytes = 32L << 20, MaxCatalogBytes = 64L << 20, MaxRunBytes = 1L << 30;
+    internal const string FolderPrefix = "WimDriverMount-rank-";
     private readonly WimFileSystem image;
-    private readonly string mount, folder;
+    private readonly string mount;
+    private string? folder;
+    private FileStream? held;
+    private bool folderFailed;
+    private long copied;
     private readonly Dictionary<string, string?> staged = new(StringComparer.OrdinalIgnoreCase);
     // A package's signer score, once Windows has scored it. It belongs to the
     // package, not the device, so one answer serves every device; it is kept
@@ -23,12 +35,30 @@ internal sealed class WindowsRankSource : IDisposable
     private readonly Dictionary<string, uint> installedSigner = new(StringComparer.OrdinalIgnoreCase);
     private readonly bool allSigningEqual;
 
-    private WindowsRankSource(WimFileSystem image, string mount)
+    internal WindowsRankSource(WimFileSystem image, string mount)
     {
         this.image = image;
         this.mount = mount;
-        folder = Path.Combine(Path.GetTempPath(), "WimDriverMount-rank-" + Guid.NewGuid().ToString("N"));
         allSigningEqual = AllSigningEqual();
+    }
+
+    // The staging folder, made on first use. Held open by a lock file, as
+    // capture's is, so a later run's sweep leaves it alone; folders a killed run
+    // left are swept here.
+    internal string? Folder
+    {
+        get
+        {
+            if (folder is not null || folderFailed) return folder;
+            try
+            {
+                DriverCapture.SweepInterrupted(Environment.SystemDirectory, DateTime.UtcNow.AddHours(-12), TextWriter.Null, FolderPrefix + "*");
+                folder = DokanInstaller.CreateStagingFolder(FolderPrefix, "The folder used to rank drivers");
+                held = new FileStream(Path.Combine(folder, DriverCapture.LockName), FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { folderFailed = true; }
+            return folderFailed ? null : folder;
+        }
     }
 
     // Null when the index was not read from a WIM (tests).
@@ -88,9 +118,9 @@ internal sealed class WindowsRankSource : IDisposable
         catch (Exception error) when (error is Win32Exception or InvalidDataException) { return null; }
     }
 
-    // The model's INF and every catalog in its folder, copied from the WIM.
+    // The model's INF and the catalog it names, copied from the WIM.
     // Returns the copy's INF path, or null if it could not be copied.
-    private string? Stage(string modelPath)
+    internal string? Stage(string modelPath)
     {
         if (staged.TryGetValue(modelPath, out string? done)) return done;
         string? result = null;
@@ -100,29 +130,55 @@ internal sealed class WindowsRankSource : IDisposable
             if (!modelPath.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("INF is outside the WIM.");
             string imageInf = "\\" + modelPath[root.Length..];
             string imageFolder = Path.GetDirectoryName(imageInf) ?? "\\";
-            string target = Path.Combine(folder, staged.Count.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            if (Folder is not { } staging) throw new IOException("The folder used to rank drivers is unavailable.");
+            // Made inside the private folder, so it inherits its permissions.
+            string target = Path.Combine(staging, staged.Count.ToString(System.Globalization.CultureInfo.InvariantCulture));
             Directory.CreateDirectory(target);
-            Copy(imageInf, Path.Combine(target, Path.GetFileName(imageInf)), int.MaxValue);
-            foreach (string catalog in image.GetFiles(imageFolder, "*.cat", SearchOption.TopDirectoryOnly))
-                Copy(catalog, Path.Combine(target, Path.GetFileName(catalog)), MaxCatalogBytes);
-            result = Path.Combine(target, Path.GetFileName(imageInf));
+            string inf = Path.Combine(target, Path.GetFileName(imageInf));
+            Copy(imageInf, inf, MaxInfBytes);
+            // Only the catalog the INF names for this platform: the one Windows
+            // checks its signature against. None named, the package is unsigned,
+            // as Windows will also find; named but absent, the same.
+            if (DriverDetection.InfCatalog(inf) is { Length: > 0 } catalog)
+            {
+                if (Path.GetFileName(catalog) != catalog || catalog.Contains(':')) throw new InvalidDataException("The INF names an invalid catalog.");
+                // By name, as Windows finds it on the mounted drive, in any letter case.
+                string[] found = image.GetFiles(imageFolder, "*.cat", SearchOption.TopDirectoryOnly)
+                    .Where(path => string.Equals(Path.GetFileName(path), catalog, StringComparison.OrdinalIgnoreCase)).ToArray();
+                if (found.Length > 1) throw new InvalidDataException("The INF's catalog name is ambiguous.");
+                if (found.Length == 1) Copy(found[0], Path.Combine(target, catalog), MaxCatalogBytes);
+            }
+            result = inf;
         }
-        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException) { }
+        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException or Win32Exception) { }
         staged[modelPath] = result;
         return result;
     }
 
-    private void Copy(string imagePath, string destination, int maxBytes)
+    private void Copy(string imagePath, string destination, long maxBytes)
     {
-        if (image.GetFileLength(imagePath) > maxBytes) throw new InvalidDataException("File is too large to rank.");
+        long length = image.GetFileLength(imagePath);
+        if (length > maxBytes) throw new InvalidDataException("File is too large to rank.");
+        if (copied + length > MaxRunBytes) throw new InvalidDataException("Too much has been copied to rank drivers in this run.");
+        if (new DriveInfo(Path.GetPathRoot(destination)!).AvailableFreeSpace < length + DriverCapture.Margin)
+            throw new IOException("Not enough free space to rank drivers.");
+        copied += length;
         using var source = image.OpenFile(imagePath, FileMode.Open, FileAccess.Read);
         using var target = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-        source.CopyTo(target);
+        byte[] buffer = new byte[81920];
+        long total = 0;
+        for (int read; (read = source.Read(buffer)) > 0;)
+        {
+            // Never more than the length the WIM declared.
+            if ((total += read) > length) throw new InvalidDataException("A WIM file is longer than its entry says.");
+            target.Write(buffer, 0, read);
+        }
     }
 
     public void Dispose()
     {
-        try { if (Directory.Exists(folder)) Directory.Delete(folder, recursive: true); }
+        held?.Dispose();
+        try { if (folder is not null && Directory.Exists(folder)) Directory.Delete(folder, recursive: true); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
     }
 }

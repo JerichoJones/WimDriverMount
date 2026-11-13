@@ -21,8 +21,23 @@ internal static partial class DriverDetection
     // The bound driver's rank. Null when Windows lists no installed driver node.
     internal static uint? InstalledDriverRank(string instanceId) => BestRank(instanceId, null, null);
 
+    // The catalog an INF names for this platform ([Version] CatalogFile, with its
+    // decorations), as Windows reads it; empty when it names none.
+    internal static string InfCatalog(string inf)
+    {
+        if (!SetupGetInfInformationW(inf, InfNameIsAbsolute, null, 0, out uint size) || size == 0 || size > 32 * 1024 * 1024)
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot query the INF.");
+        byte[] information = new byte[(int)size];
+        if (!SetupGetInfInformationW(inf, InfNameIsAbsolute, information, size, out _))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot read the INF's information.");
+        var original = new OriginalFileInfo { Size = (uint)Marshal.SizeOf<OriginalFileInfo>(), Inf = "", Catalog = "" };
+        if (!SetupQueryInfOriginalFileInformationW(information, 0, IntPtr.Zero, ref original))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot read the INF's catalog name.");
+        return original.Catalog ?? "";
+    }
+
     // The rank of one WIM model line on this device. inf is a copy of the
-    // model's INF on disk with its catalogs beside it, so Windows can check the
+    // model's INF on disk with its catalog beside it, so Windows can check the
     // signature. Null when Windows lists no node for that model line.
     internal static uint? CandidateDriverRank(string instanceId, string inf, InfIndex.ModelEntry model) => BestRank(instanceId, inf, model);
 

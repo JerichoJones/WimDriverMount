@@ -159,14 +159,14 @@ internal static partial class DriverCapture
         }
     }
 
-    private const string LockName = "capture.lock";
+    internal const string LockName = "capture.lock";
 
     // Working folders a killed capture left (only administrators can make them there):
     // older than the cutoff, and with no lock a running capture holds. Its lock cannot be
-    // deleted while held; 0.7.12's folders have none.
-    internal static void SweepInterrupted(string parent, DateTime cutoffUtc, TextWriter output)
+    // deleted while held; 0.7.12's folders have none. Ranking's folders too (WindowsRankSource).
+    internal static void SweepInterrupted(string parent, DateTime cutoffUtc, TextWriter output, string pattern = "WimDriverMount-capture-*")
     {
-        foreach (var old in new DirectoryInfo(parent).EnumerateDirectories("WimDriverMount-capture-*"))
+        foreach (var old in new DirectoryInfo(parent).EnumerateDirectories(pattern))
             if ((old.Attributes & FileAttributes.ReparsePoint) == 0 && old.CreationTimeUtc < cutoffUtc)
                 try
                 {
