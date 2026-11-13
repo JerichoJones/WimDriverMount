@@ -4,23 +4,27 @@
 
 Version 0.10.0 · Jericho Jones · MIT (third-party notices in `licenses`).
 
-WIM Driver Mount mounts a WIM image as a read-only drive, without extracting it, from a
-local disk, a network share, or an HTTP/HTTPS server. It can also run a program straight
-from a WIM, and install the right drivers from a driver WIM.
+WIM Driver Mount mounts a WIM image as a read-only drive, without extracting it. The WIM can be on a local disk, a network share, or an HTTP/HTTPS server.
 
-**Drivers without staging.** Point it at a driver WIM on a share and let Plug and Play
-work against it: nothing is extracted, nothing is copied to the machine first, and no
-local disk space is needed for the driver set. A 20 GB driver WIM stays where it is;
-Windows reads only the INFs that match the hardware in front of it, and copies into its
-own driver store only the packages it actually installs. That makes it useful after a
-machine is already running: the model's drivers changed, a device came back unknown, or a
-technician wants the whole driver library available for one run and then gone.
+It can also:
+- run a program straight from a WIM
+- install the right drivers from a driver WIM
 
-The program is `WimDriverMount.exe`. It is self-contained: copy the folder anywhere, no
-.NET installation needed. Run it with no arguments, or with `--help`, for a short guide.
-It runs as administrator, so on a shared PC keep it in a folder only administrators can
-write (under Program Files, say); it warns when its folder is not. `--install` puts it
-there for you and adds a right-click Mount to File Explorer.
+**Drivers without staging.** Point it at a driver WIM on a share and let Plug and Play work against it.
+- Nothing is extracted. Nothing is copied to the machine first. No local disk space is needed for the driver set.
+- A 20 GB driver WIM stays where it is. Windows reads only the INFs that match the hardware in front of it.
+- Windows copies into its own driver store only the packages it actually installs.
+
+That makes it useful after a machine is already running:
+- the model's drivers changed
+- a device came back unknown
+- a technician wants the whole driver library available for one run, and then gone
+
+**The program** is `WimDriverMount.exe`.
+- It is self-contained: copy the folder anywhere. No .NET installation needed.
+- Run it with no arguments, or with `--help`, for a short guide.
+- It runs as administrator. On a shared PC, keep it in a folder only administrators can write (under Program Files, say). It warns when its folder is not.
+- `--install` puts it there for you and adds a right-click Mount to File Explorer.
 
 ## Which one do I want?
 
@@ -39,78 +43,84 @@ there for you and adds a right-click Mount to File Explorer.
 
 ## Install drivers from a WIM
 
-The quickest way: drop a driver WIM onto `WimDriverMount.exe`, or run, from the
-program's folder:
+The quickest way: drop a driver WIM onto `WimDriverMount.exe`, or run this from the program's folder:
 
 ```
 .\WimDriverMount.exe C:\Drivers\Lenovo.wim
 ```
 
-This and every example below works as written in both PowerShell and Command Prompt, once
-you replace anything in `<...>` with your own value. Lines marked PowerShell are PowerShell only.
+> This and every example below works as written in both PowerShell and Command Prompt, once you replace anything in `<...>` with your own value. Lines marked PowerShell are PowerShell only.
 
-It mounts the WIM, reads every INF in it once, and for each device present picks the
-driver Windows would rank best — by signer, the driver's feature score, how closely the
-hardware ID matches, then date and version, the order Windows uses. It installs that
-driver only where it beats the one already installed, then unmounts. Nothing restarts
-automatically.
+What it does:
+1. Mounts the WIM and reads every INF in it once.
+2. For each device present, picks the driver Windows would rank best. It uses the order Windows uses: signer, the driver's feature score, how closely the hardware ID matches, then date and version.
+3. Installs that driver only where it beats the one already installed.
+4. Unmounts. Nothing restarts automatically.
 
-How much the signer counts is set by the Windows policy "Treat all digitally signed
-drivers equally", which is on unless an administrator turned it off. While it is on,
-every signed driver ranks the same and an unsigned one ranks below them all. While it is
-off, a Microsoft-signed driver (inbox or WHQL) ranks above an Authenticode-signed one,
-even an older one, and even if the other matches the device better. Who signed a package
-is known only once its catalog is checked, so wherever the signer could change the
-decision, Windows is asked to rank that driver itself: only the package's INF and the
-one catalog it names are copied from the WIM, to a folder under System32 that only
-administrators can open, removed afterwards. A device the
-signer cannot affect costs nothing extra. Extensions are still ranked without the
-signer: Windows does not rank them the same way. Windows checks every signature and does
-the installation itself. If it refuses a package (a broken or tampered catalog, say) before touching the
-device, that package is not tried again for any device and the next-ranked one is
-used, as Windows' own installer would; the report shows the refusal. Only Windows'
-verdict on the package counts: if the package could not be read (a share that stopped
-answering, say), that is a failure and nothing else is tried. A device whose chosen
-package Windows refused, and that no other package replaced, fails the run -- even if it
-keeps a working driver. If Windows will not apply an extension,
-the next-ranked extension of the same kind is handed over, and the run still fails.
+### Preview first
 
-**Preview first.** On a machine you care about, look before you install:
+On a machine you care about, look before you install:
 
 ```
 .\WimDriverMount.exe --wim C:\Drivers\Lenovo.wim --preview-drivers
 ```
 
-This lists each device the WIM has a driver for, with the decision — INSTALL, KEEP,
-SKIP, or EXTEND for an extension driver Windows would add — and the reason. It only reads the WIM: no mount, no Dokan, no changes.
-It asks for administrator rights, as installing does: Windows ranks each driver from a copy
-of its INF and catalog in a folder only administrators can write, so the preview gives the
-same answers the install will. When the list looks right, run the same command with
-`--install-drivers` instead (or drop the WIM on the program).
+- It lists each device the WIM has a driver for, with the decision and the reason. The decision is INSTALL, KEEP, SKIP, or EXTEND (an extension driver Windows would add).
+- It only reads the WIM: no mount, no Dokan, no changes.
+- It asks for administrator rights, as installing does. Windows ranks each driver from a copy of its INF and catalog in a folder only administrators can write, so the preview gives the same answers the install will.
+- When the list looks right, run the same command with `--install-drivers` instead (or drop the WIM on the program).
 
-**After installing** you get a driver report: each device where a driver was installed,
-refused, failed or could not be decided, with totals. With `--log`, the log also gets a table of every device —
-before, after, and the decision. If Windows reports that a restart is needed, the exit code is 3010.
+### After installing
 
-Tips:
+- You get a driver report: each device where a driver was installed, refused, failed or could not be decided, with totals.
+- With `--log`, the log also gets a table of every device: before, after, and the decision.
+- If Windows reports that a restart is needed, the exit code is 3010.
 
-- One driver WIM can hold drivers for many models. Only drivers that match the hardware
-  in front of it are considered, so a broad library is fine.
-- Extension INFs (add-on packages some vendors ship beside the main driver) are chosen and
-  installed the way Windows does it. One that cannot be read is skipped and named in the
-  output; it never blocks the main driver.
-- An INF that cannot be read blocks only the devices whose IDs it mentions, and the
-  output names it. The rest of the WIM is still used.
-- `--setup-log` marks the start and end of the run in Windows' own device-install log
-  (`C:\Windows\INF\setupapi.dev.log`), so you can find this run there.
-- Driver installs cannot run in the background; leave out `--background`.
+### Tips
 
-How closely it matches Windows: compared with Windows' own results on one PC and one driver
-set, INF parsing was identical on 949 INFs, candidate lists on 260 of 260 devices, and the
-chosen driver on 127 of 127 devices (and 2 of 2 extensions). The signer rules were checked
-the same way, in both policy states, with inbox, WHQL, Authenticode and unsigned packages:
-the chosen driver matched Windows' in 12 of 12 cases, previewing and installing. That is not
-a guarantee for every machine.
+- One driver WIM can hold drivers for many models. Only drivers that match the hardware in front of it are considered, so a broad library is fine.
+- Extension INFs (add-on packages some vendors ship beside the main driver) are chosen and installed the way Windows does it. One that cannot be read is skipped and named in the output. It never blocks the main driver.
+- An INF that cannot be read blocks only the devices whose IDs it mentions, and the output names it. The rest of the WIM is still used.
+- `--setup-log` marks the start and end of the run in Windows' own device-install log (`C:\Windows\INF\setupapi.dev.log`), so you can find this run there.
+- Driver installs cannot run in the background. Leave out `--background`.
+
+### How the signer counts
+
+It depends on the Windows policy "Treat all digitally signed drivers equally". The policy is on unless an administrator turned it off.
+
+| Policy | How drivers rank |
+|---|---|
+| On (default) | All signed drivers rank the same. Unsigned drivers rank below them all. |
+| Off | Microsoft-signed (inbox or WHQL) beats Authenticode-signed, even if it is older or the other matches the device better. |
+
+How the tool checks:
+- Who signed a package is known only once its catalog is checked.
+- So wherever the signer could change the decision, Windows is asked to rank that driver itself. For that, the tool copies just the package's INF and the one catalog it names from the WIM, into a folder under System32 that only administrators can open. The folder is removed afterwards.
+- Devices the signer can't affect cost nothing extra.
+- Extensions are still ranked without the signer, because Windows does not rank them the same way.
+- Windows checks every signature and does the installation itself.
+
+When Windows won't use a package:
+
+| What happens | Result |
+|---|---|
+| Windows refuses a package before touching the device (for example, a broken or tampered catalog) | It isn't tried again for any device, and the next-ranked package is used, as Windows' own installer would. The report shows the refusal. |
+| The package could not be read (for example, a share that stopped answering) | That is a failure, and nothing else is tried. Only Windows' verdict on the package counts. |
+| Windows refused a device's chosen package, and no other package replaced it | The run fails, even if the device keeps a working driver. |
+| Windows will not apply an extension | The next-ranked extension of the same kind is handed over. The run still fails. |
+
+### How closely it matches Windows
+
+Compared with Windows' own results on one PC and one driver set:
+
+| What was compared | Matched Windows |
+|---|---|
+| INF parsing | Identical on 949 INFs |
+| Candidate lists | 260 of 260 devices |
+| Chosen driver | 127 of 127 devices (and 2 of 2 extensions) |
+| Signer rules: both policy states, with inbox, WHQL, Authenticode and unsigned packages, previewing and installing | 12 of 12 cases |
+
+That is not a guarantee for every machine.
 
 ## Capture this PC's drivers into a WIM
 
@@ -121,66 +131,74 @@ To keep this PC's drivers, for a reinstall or for another PC of the same model:
 .\WimDriverMount.exe --capture-drivers C:\Drivers\this-pc.wim
 ```
 
-The first command lists what it would take and what it would leave out, and checks the
-free space; it writes nothing, and does not ask for administrator rights. The second writes
-a new WIM with Windows' own WIM library (`wimgapi.dll`). It needs administrator rights.
+| Command | What it does | Administrator rights |
+|---|---|---|
+| With `--whatif` | Lists what it would take and what it would leave out, and checks the free space. Writes nothing. | Not asked for |
+| Without | Writes a new WIM with Windows' own WIM library (`wimgapi.dll`). | Needed |
 
-**What it takes:** the third-party driver packages (the `oemNN.inf` ones in Windows' driver
-store) that this PC's hardware uses:
+### What it takes
 
-- the driver and extension packages of every hardware device, connected now or not (a
-  dock or a printer that is unplugged today still counts);
-- printers and scanners, and the drivers of print queues (a printer added by its network
-  address has no device);
-- the packages those install themselves (an INF's `CopyINF`, as AMD's display driver does).
+The third-party driver packages (the `oemNN.inf` ones in Windows' driver store) that this PC's hardware uses:
+- the driver and extension packages of every hardware device, connected now or not (a dock or a printer that is unplugged today still counts)
+- printers and scanners, and the drivers of print queues (a printer added by its network address has no device)
+- the packages those install themselves (an INF's `CopyINF`, as AMD's display driver does)
 
 Drivers that come with Windows are not taken: Windows already has them.
 
-**What it leaves out, and says so:** each run lists every package something on this PC uses
-that it leaves out, with the reason.
+### What it leaves out
 
-- *App-made devices:* a device that hangs from no hardware in Windows' device tree, such as
-  a virtual sound card, game-pad bus or VPN adapter an app created. Windows has no flag for
-  this; it is read from the device tree, so the list is worth a look.
-- *Service-only drivers:* a package only a service uses (a VPN, a filter driver), with no
-  device. `--install-drivers` installs a driver only where a device matches it, so such a
-  package would only ever be a backup.
+Each run lists every package something on this PC uses that it leaves out, with the reason:
 
-Third-party packages that nothing on this PC uses (older versions, drivers added but never
-used, drivers of devices removed from the PC) are not captured either; the run says how many
-and their size. If a captured INF
-pulls in (`Include=`) another third-party INF from this PC's driver store that is not
-captured, a WARNING names it.
+| Left out | What it is |
+|---|---|
+| App-made devices | A device that hangs from no hardware in Windows' device tree, such as a virtual sound card, game-pad bus or VPN adapter an app created. Windows has no flag for this; it is read from the device tree, so the list is worth a look. |
+| Service-only drivers | A package only a service uses (a VPN, a filter driver), with no device. `--install-drivers` installs a driver only where a device matches it, so such a package would only ever be a backup. |
 
-**Compression:** `--compression none`, `fast` or `maximum` (the default). Each of the three
-is tested end to end: captured, read back, mounted, and installed from. ESD files (LZMS
-compression) are not written.
+Also not captured:
+- Third-party packages that nothing on this PC uses (older versions, drivers added but never used, drivers of devices removed from the PC). The run says how many and their size.
+- If a captured INF pulls in (`Include=`) another third-party INF from this PC's driver store that is not captured, a WARNING names it.
 
-**Safety:**
+### Compression
 
-- It only creates a new `.wim`; it refuses a name that exists.
-- The WIM is written and checked in a folder only administrators can open, then copied to
-  the folder you named.
-- Before it reports success, every file is read back through this program's own WIM reader
-  and compared with the driver store.
-- It checks the free space first. The Windows drive needs the drivers' full size plus
-  256 MB of working space; the target folder's drive needs the drivers' size. Both keep
-  5 GB free on top.
-- Ctrl+C stops it and leaves nothing behind. A capture that was killed leaves its working
-  folder, which the next capture removes after 12 hours.
+| `--compression` | |
+|---|---|
+| `none` | |
+| `fast` | |
+| `maximum` | Default |
 
-At the end it prints the WIM's SHA-256 and the command that installs from it on another PC,
-refusing the file if it has changed since:
+- Each of the three is tested end to end: captured, read back, mounted, and installed from.
+- ESD files (LZMS compression) are not written.
+
+### Safety
+
+- It only creates a new `.wim`. It refuses a name that exists.
+- The WIM is written and checked in a folder only administrators can open, then copied to the folder you named.
+- Before it reports success, every file is read back through this program's own WIM reader and compared with the driver store.
+- It checks the free space first:
+
+  | Drive | Needs | Plus |
+  |---|---|---|
+  | The Windows drive | The drivers' full size, plus 256 MB of working space | 5 GB kept free |
+  | The target folder's drive | The drivers' size | 5 GB kept free |
+
+- Ctrl+C stops it and leaves nothing behind.
+- A capture that was killed leaves its working folder. The next capture removes it after 12 hours.
+
+### Installing it on another PC
+
+At the end it prints the WIM's SHA-256 and the command that installs from it on another PC. That command refuses the file if it has changed since:
 
 ```
 .\WimDriverMount.exe --wim C:\Drivers\this-pc.wim --wim-sha256 <hash> --install-drivers
 ```
 
-How it was checked: in a test VM, the packages it captured were identical, file for file,
-to what Microsoft's `Export-WindowsDriver` exports for them (that exports every third-party
-package, used or not), and a captured driver was removed and installed again from the WIM.
-On an ARM64 test VM it captured, read back and mounted cleanly; reinstalling there is not yet
-tested. On a real PC only the `--whatif` listing has been run.
+### How it was checked
+
+| Where | Result |
+|---|---|
+| Test VM | The packages it captured were identical, file for file, to what Microsoft's `Export-WindowsDriver` exports for them (that exports every third-party package, used or not). A captured driver was removed and installed again from the WIM. |
+| ARM64 test VM | Captured, read back and mounted cleanly. Reinstalling there is not yet tested. |
+| Real PC | Only the `--whatif` listing has been run. |
 
 ## Mount a WIM as a drive
 
@@ -188,103 +206,96 @@ tested. On a real PC only the `--whatif` listing has been run.
 .\WimDriverMount.exe --wim C:\Images\tools.wim --drive M:
 ```
 
-M: stays mounted until you press Ctrl+C in that window. Use this when you want to look
-around in a WIM or copy a few files out of it.
+M: stays mounted until you press Ctrl+C in that window. Use this to look around in a WIM or copy a few files out of it.
 
 ```
 .\WimDriverMount.exe --wim \\server\share\tools.wim --drive M: --background
 .\WimDriverMount.exe --unmount M:
 ```
 
-`--background` mounts the drive and returns; it stays mounted after the window closes,
-until `--unmount`. Use this when other programs or later steps need the drive. While it
-is mounted, right-clicking the drive in File Explorer also offers **Unmount with WIM
-Driver Mount**, which runs the same `--unmount` (Windows 11 lists it under *Show more
-options*). The entry is on that drive only and is removed when it unmounts. From the
-installed program it is there for every account, as the drive is; from any other copy,
-only for the account whose administrator password was typed. Either way, the
-administrator prompt must be approved by the same administrator account that mounted
-the drive.
+`--background` mounts the drive and returns. The drive stays mounted after the window closes, until `--unmount`. Use this when other programs or later steps need the drive.
 
-- **Sources:** a local path, a network path (`\\server\share\tools.wim`), or an HTTP or
-  HTTPS URL. Only the parts of the WIM you actually read are fetched. Web servers must
-  support byte ranges and a strong ETag. Plain HTTP works but warns that the data isn't
-  protected in transit; installing drivers or `--run` from plain HTTP also needs `--wim-sha256`.
-- **Drive letter:** leave out `--drive` to use the highest free letter, from Z: down.
-- **Image:** a WIM can hold several images; `--index 2` picks the second (default 1).
-- **Who can open the drive:** the account that mounted it, SYSTEM and elevated
-  administrators. Other accounts on the computer are refused. A right-click Mount also lets
-  in the account signed in to the desktop where the administrator prompt appeared, so a
-  standard user who has an administrator's password typed can open the drive, every file
-  in it, not only what the WIM's permissions allow (when Windows can name that account).
-  A console mount adds it only with `--from-menu`, which is what the menu passes and is
-  shown in the administrator prompt's details. Add `--all-users` to let
-  every account open it: each then reads only what the WIM's own stored permissions allow
-  it to read (checked by Windows' own access check), so a file only administrators could
-  read when the image was captured stays closed to them. A WIM captured without
-  permissions (wimlib's `--no-acls`) has none to apply, so every file is open to all.
-- **The drive** is read-only and shows the program's icon in Explorer.
-- **Format...** appears on the drive's right-click menu because Windows offers it on every
-  local disk, and there is no supported way to hide it for one drive. It cannot change
-  anything: Windows refuses with "Cannot format. This volume is write protected.", and the
-  program only ever opens the WIM file for reading.
-- **Network drops:** a short outage of the share or web server does not lose the drive;
-  reads are retried for a bounded time, then fail rather than hang. Limit, web WIMs: the
-  bound is per read, and one request from Windows (listing a folder, say) can need
-  several reads. A server that keeps failing for most of a minute on each of several
-  blocks in a row can outlast Windows' own request timeout, and Windows then drops the
-  drive instead of the program stopping it cleanly. Either way the mount ends; only the
-  clean stop message is missing.
-- **Split WIMs (`.swm`):** give the first part (`install.swm`); the others (`install2.swm`,
-  `install3.swm`, …) are found beside it and read where they are — nothing is joined or
-  copied. This is the naming DISM `/Split-Image` uses. All parts must be present, in
-  order, with the same set ID and compression, or the mount is refused. That catches
-  mix-ups, not a part someone crafted on purpose: the set ID is not a secret.
-  `--wim-sha256` cannot be used with a split WIM, since it checks a single file; to
-  trust one, serve it over HTTPS with `--wim-cert-sha256`, and pin what you run with
-  `--run-sha256`.
-- **Formats:** every kind of WIM that DISM on Windows 11 makes: uncompressed, fast
-  (XPRESS), max (LZX), recovery (`.esd`, LZMS) and split `.swm`. Also wimlib's
-  `--solid` LZMS WIMs.
-- **Alternate data streams appear as separate files.** A file's extra named streams in the
-  WIM are not offered as streams: Windows' stream requests (`dir /r`, `Get-Item -Stream`,
-  opening `file:stream`) are refused. Each stream is listed beside its file as a plain
-  read-only file named `<file>_<stream>` (stream `a` of `notes` is `notes_a`). DokanNet
-  2.3.0.3, the library this program uses to talk to Dokan, can crash when a program lists a
-  file's streams (dokan-dotnet issue #395); the fix is not in a release yet. A later version
-  built with a fixed DokanNet may offer them as streams again.
+**Unmounting from File Explorer.** While a background drive is mounted, right-click it and choose **Unmount with WIM Driver Mount**. It runs the same `--unmount`.
+- Windows 11 lists it under *Show more options*.
+- The entry is on that drive only, and is removed when it unmounts.
+- From the installed program, the entry is there for every account, as the drive is. From any other copy, only for the account whose administrator password was typed.
+- Either way, the administrator prompt must be approved by the same administrator account that mounted the drive.
+
+### Options
+
+| Option | What it does | Default |
+|---|---|---|
+| `--wim <source>` | A local path, a network path (`\\server\share\tools.wim`), or an HTTP or HTTPS URL | |
+| `--drive M:` | The drive letter | Highest free letter, from Z: down |
+| `--index 2` | A WIM can hold several images; this picks the second | 1 |
+| `--background` | Keeps the drive after the window closes, until `--unmount` | |
+| `--all-users` | Lets every account on the computer open the drive (see below) | |
+
+**Sources:**
+- Only the parts of the WIM you actually read are fetched.
+- Web servers must support byte ranges and a strong ETag.
+- Plain HTTP works but warns that the data isn't protected in transit. Installing drivers or `--run` from plain HTTP also needs `--wim-sha256`.
+
+### Who can open the drive
+
+| Mounted with | Who can open it |
+|---|---|
+| Any mount | The account that mounted it, SYSTEM and elevated administrators. Other accounts on the computer are refused. |
+| Right-click Mount | Also the account signed in to the desktop where the administrator prompt appeared (when Windows can name that account). So a standard user who has an administrator's password typed can open the drive: every file in it, not only what the WIM's permissions allow. |
+| A console mount with `--from-menu` | The same as a right-click Mount. `--from-menu` is what the menu passes, and it is shown in the administrator prompt's details. |
+| `--all-users` | Every account. Each reads only what the WIM's own stored permissions allow it to read (checked by Windows' own access check). A file only administrators could read when the image was captured stays closed to them. |
+
+A WIM captured without permissions (wimlib's `--no-acls`) has none to apply, so every file is open to all.
+
+### About the drive
+
+- **Read-only.** The drive is read-only and shows the program's icon in Explorer.
+- **Format...** appears on the drive's right-click menu. Windows offers it on every local disk, and there is no supported way to hide it for one drive. It cannot change anything: Windows refuses with "Cannot format. This volume is write protected.", and the program only ever opens the WIM file for reading.
+- **Network drops.** A short outage of the share or web server does not lose the drive. Reads are retried for a bounded time, then fail rather than hang.
+  - Limit, web WIMs: the bound is per read, and one request from Windows (listing a folder, say) can need several reads.
+  - A server that keeps failing for most of a minute on each of several blocks in a row can outlast Windows' own request timeout. Windows then drops the drive instead of the program stopping it cleanly.
+  - Either way the mount ends; only the clean stop message is missing.
+
+### Split WIMs (`.swm`)
+
+- Give the first part (`install.swm`). The others (`install2.swm`, `install3.swm`, …) are found beside it and read where they are. Nothing is joined or copied. This is the naming DISM `/Split-Image` uses.
+- All parts must be present, in order, with the same set ID and compression, or the mount is refused. That catches mix-ups, not a part someone crafted on purpose: the set ID is not a secret.
+- `--wim-sha256` cannot be used with a split WIM, since it checks a single file. To trust one, serve it over HTTPS with `--wim-cert-sha256`, and pin what you run with `--run-sha256`.
+
+### Formats
+
+| Made by | Kinds |
+|---|---|
+| DISM on Windows 11 (every kind it makes) | Uncompressed, fast (XPRESS), max (LZX), recovery (`.esd`, LZMS) and split `.swm` |
+| wimlib | `--solid` LZMS WIMs |
+
+### Alternate data streams appear as separate files
+
+- A file's extra named streams in the WIM are not offered as streams. Windows' stream requests (`dir /r`, `Get-Item -Stream`, opening `file:stream`) are refused.
+- Each stream is listed beside its file as a plain read-only file named `<file>_<stream>` (stream `a` of `notes` is `notes_a`).
+- Why: DokanNet 2.3.0.3, the library this program uses to talk to Dokan, can crash when a program lists a file's streams (dokan-dotnet issue #395). The fix is not in a release yet. A later version built with a fixed DokanNet may offer them as streams again.
 
 ### Making sure you are reading the right WIM
 
 Three options, from cheapest to strongest:
 
-- `--wim-cert-sha256 <hash>`: only needed in two cases: your own HTTPS server with a
-  self-signed certificate, or a network where you trust that one server and nothing in between.
-  The program then accepts only the certificate with this fingerprint. It checks who sends the
-  file, not the file itself.
-- `--wim-sha256 <hash>`: require the whole WIM to match this SHA-256. Proves the bytes,
-  so it works even over plain HTTP, and a changed or swapped source stops the mount. It
-  reads the entire WIM first, which for a large WIM over a network is the download that
-  mounting was meant to avoid.
-- `--run-sha256 <hash>`: for `--run`, checks only the program file (see below).
+| Option | What it checks | When to use it |
+|---|---|---|
+| `--wim-cert-sha256 <hash>` | Who sends the file, not the file itself. The program accepts only the certificate with this fingerprint. | Only needed in two cases: your own HTTPS server with a self-signed certificate, or a network where you trust that one server and nothing in between. |
+| `--wim-sha256 <hash>` | The whole WIM must match this SHA-256. Proves the bytes, so it works even over plain HTTP. A changed or swapped source stops the mount. | Note: it reads the entire WIM first. For a large WIM over a network, that is the download mounting was meant to avoid. |
+| `--run-sha256 <hash>` | For `--run`, only the program file (see [Run a program](#run-a-program-from-a-wim)). | |
 
 Get a file's SHA-256 with `Get-FileHash C:\Images\tools.wim` in PowerShell, or `certutil -hashfile C:\Images\tools.wim SHA256` in Command Prompt.
 
 ### Signing in to an HTTPS server
 
-If the server asks for sign-in, the program says so (`HTTP 401`). There are three ways to
-sign in, and only to an `https://` WIM. The sign-in goes only to the server named in
-`--wim`: redirects are not followed, and a split WIM's other parts come from the same place.
+If the server asks for sign-in, the program says so (`HTTP 401`). There are three ways to sign in:
 
-- `--wim-windows-signin`: sign in as a Windows account (Kerberos, or NTLM where Kerberos is
-  not available). The password itself is never sent. With NTLM, though, the server gets
-  enough to try to guess a weak password offline, or to pass the sign-in on to another
-  server. Use it only with a server you trust, and check the name in `--wim`.
-- `--wim-token-file <path>`: send the token in the file as `Authorization: Bearer <token>`.
-  The file holds the token alone, on one line.
-- `--wim-client-cert <thumbprint>`: offer a client certificate from the certificate store.
-  Copy the thumbprint from the certificate's Details tab; spaces are ignored. It can be
-  combined with either of the other two.
+| Option | What it does |
+|---|---|
+| `--wim-windows-signin` | Signs in as a Windows account (Kerberos, or NTLM where Kerberos is not available). The password itself is never sent. With NTLM, though, the server gets enough to try to guess a weak password offline, or to pass the sign-in on to another server. Use it only with a server you trust, and check the name in `--wim`. |
+| `--wim-token-file <path>` | Sends the token in the file as `Authorization: Bearer <token>`. The file holds the token alone, on one line. |
+| `--wim-client-cert <thumbprint>` | Offers a client certificate from the certificate store. Copy the thumbprint from the certificate's Details tab; spaces are ignored. Can be combined with either of the other two. |
 
 ```powershell
 .\WimDriverMount.exe --wim https://images.corp.local/dell.wim --wim-windows-signin
@@ -292,33 +303,29 @@ sign in, and only to an `https://` WIM. The sign-in goes only to the server name
 .\WimDriverMount.exe --wim https://images.corp.local/dell.wim --wim-client-cert 3B1F...
 ```
 
-In a settings file these are `wim-windows-signin = true`, `wim-token-file = <path>` and
-`wim-client-cert = <thumbprint>`, in the `[mount:<name>]` section of the mount that needs
-them. They are refused in `[defaults]`.
+Rules:
+- Sign-in works only to an `https://` WIM.
+- The sign-in goes only to the server named in `--wim`. Redirects are not followed, and a split WIM's other parts come from the same place.
+- In a settings file these are `wim-windows-signin = true`, `wim-token-file = <path>` and `wim-client-cert = <thumbprint>`. Put them in the `[mount:<name>]` section of the mount that needs them. They are refused in `[defaults]`.
 
-**Why not in `[defaults]`.** A default applies to every mount in the file, and a mount cannot
-take it away. A sign-in is meant for one server. Suppose `[defaults]` named your company's
-token and one mount came from a vendor's server: the vendor would receive your company's
-token. Windows sign-in would also be offered to every server in the file, and a client
-certificate shown to each one. Naming the sign-in in each mount's own section makes you choose
-it per server, so it cannot spread to a server you did not mean.
+**Why not in `[defaults]`.**
+- A default applies to every mount in the file, and a mount cannot take it away. A sign-in is meant for one server.
+- Suppose `[defaults]` named your company's token and one mount came from a vendor's server: the vendor would receive your company's token.
+- Windows sign-in would also be offered to every server in the file, and a client certificate shown to each one.
+- Naming the sign-in in each mount's own section makes you choose it per server, so it cannot spread to a server you did not mean.
 
-**Which account signs in.** Mounting needs administrator rights, so the program runs as
-whoever approved the Windows prompt. That is usually you. If someone typed a different
-administrator's password at the prompt, the program runs as that administrator, and Windows
-sign-in and the certificate store are theirs. The program prints the account before it
-connects, for example `Signing in to images.corp.local as CONTOSO\admin (Windows sign-in).`
+**Which account signs in.**
+- Mounting needs administrator rights, so the program runs as whoever approved the Windows prompt. That is usually you.
+- If someone typed a different administrator's password at the prompt, the program runs as that administrator, and Windows sign-in and the certificate store are theirs.
+- The program prints the account before it connects, for example `Signing in to images.corp.local as CONTOSO\admin (Windows sign-in).`
 
-**Why the token file is for administrators only.** A token is as good as a password
-to the server. If your own account could read the file, any program running as you could
-read it too, silently: a bad script, a browser download you ran, an editor extension. So the
-program uses the file only when no one but administrators and SYSTEM can read or change it.
+#### Protecting the token file
 
-Lock the folder first, then create the token file inside it, so the token is never readable
-by others. A new folder under `C:\` lets every signed-in account read what is in it until it is
-locked, and a program that opened a file before then could keep reading it afterwards. A file
-created after the lock starts out readable by administrators and SYSTEM only. In an
-administrator PowerShell window, with the token copied to the clipboard:
+The program uses the token file only when no one but administrators and SYSTEM can read or change it.
+
+Why: a token is as good as a password to the server. If your own account could read the file, any program running as you could read it too, silently: a bad script, a browser download you ran, an editor extension.
+
+How: lock the folder first, then create the token file inside it, so the token is never readable by others. In an administrator PowerShell window, with the token copied to the clipboard:
 
 ```powershell
 New-Item -ItemType Directory C:\Config
@@ -329,21 +336,24 @@ if ($LASTEXITCODE -eq 0) { New-Item C:\Config\wim.token -Value (Get-Clipboard -R
 Remove-Item C:\Config\lock
 ```
 
-The first `--protect-config` locks the folder to administrators and SYSTEM. The token is written
-only if that worked, and only into a new file: `New-Item` refuses a file that is already
-there, which someone else could have put there before the lock. If any line reports an error,
-stop, delete `C:\Config` and start again. The second `--protect-config` makes the
-Administrators group the token file's owner, which the program requires. It does not show
-the token. Pasting from the clipboard keeps the token out of PowerShell's command history;
-clear the clipboard afterwards, since any program running as you can read it. The token is never printed, logged or put on a command line: a background mount is
-given the file's path and reads the file itself.
+What each step does:
+- The first `--protect-config` locks the folder to administrators and SYSTEM.
+- The token is written only if that worked, and only into a new file. `New-Item` refuses a file that is already there, which someone else could have put there before the lock.
+- The second `--protect-config` makes the Administrators group the token file's owner, which the program requires. It does not show the token.
+- If any line reports an error, stop, delete `C:\Config` and start again.
 
-**The preview reads it the same way.** `--preview-drivers` asks for administrator rights like
-the other driver commands, so it can read the token file too. Making the file readable by your
-account instead would undo the protection above. A limit worth knowing: on the default Windows
-setting, a program already running as an administrator's ordinary half can sometimes get past
-the prompt without asking. So this fully protects standard user accounts and computers set to
-"Always notify". On other computers it keeps the token from programs that do not try that hard.
+Why this order:
+- A new folder under `C:\` lets every signed-in account read what is in it until it is locked. A program that opened a file before then could keep reading it afterwards.
+- A file created after the lock starts out readable by administrators and SYSTEM only.
+- Pasting from the clipboard keeps the token out of PowerShell's command history. Clear the clipboard afterwards, since any program running as you can read it.
+
+The token is never printed, logged or put on a command line. A background mount is given the file's path and reads the file itself.
+
+**The preview reads it the same way.** `--preview-drivers` asks for administrator rights like the other driver commands, so it can read the token file too. Making the file readable by your account instead would undo the protection above.
+
+A limit worth knowing: on the default Windows setting, a program already running as an administrator's ordinary half can sometimes get past the prompt without asking. So:
+- This fully protects standard user accounts and computers set to "Always notify".
+- On other computers it keeps the token from programs that do not try that hard.
 
 ## Install, with a right-click Mount
 
@@ -351,54 +361,46 @@ the prompt without asking. So this fully protects standard user accounts and com
 .\WimDriverMount.exe --install
 ```
 
-Copies the program, with the notices it carries and the signed Dokan installer for this PC
-(`Dokan_x64.msi` or `Dokan_ARM64.msi`) if one is beside it (a file of that name that is not
-a genuine Dokan 2.3 or later 2.x release stops the install), to
-`C:\Program Files\WimDriverMount`, checks every copied file, and adds **Mount with WIM
-Driver Mount** to the right-click menu of `.wim`, `.swm` and `.esd` files (Windows 11:
-*Show more options*). Double-click is left to whatever program already opens WIMs.
+What it does:
+1. Copies the program to `C:\Program Files\WimDriverMount`, with the notices it carries and the signed Dokan installer for this PC (`Dokan_x64.msi` or `Dokan_ARM64.msi`) if one is beside it. A file of that name that is not a genuine Dokan 2.3 or later 2.x release stops the install.
+2. Checks every copied file.
+3. Adds **Mount with WIM Driver Mount** to the right-click menu of `.wim`, `.swm` and `.esd` files (Windows 11: *Show more options*). Double-click is left to whatever program already opens WIMs.
 
-Mount works like Windows' Mount on an ISO: the WIM is mounted in the background at the
-highest free letter, and File Explorer opens on it. A WIM with several images asks which
-one first. Each mount asks for administrator approval, because Dokan drives need it; the
-drive keeps its **Unmount with WIM Driver Mount** entry for when you are done. For a split
-WIM, right-click the first part. A right-click Mount shows no warnings (for example that
-another sign-in's drive letters could not be checked); a mount from a console shows them. A
-message box appears only if the mount fails or its drive cannot be shown here.
+### Using Mount
 
-- **Another folder:** `--install "D:\Program Files\WimDriverMount"`. It must be on a local
-  internal disk, reached through no link; its parent must already exist, and only
-  administrators may rename things in any folder above it (a folder made by an ordinary
-  account, or one in the root of most data disks, is refused). Only the last folder is created.
-- **Permissions:** an existing folder only administrators can change is left exactly as
-  it is. A new one is made with owner Administrators, full control for Administrators and
-  SYSTEM, and read and run for Users, with nothing inherited. An existing folder another
-  account can change is refused rather than fixed: whoever has it open keeps that access
-  whatever its permissions become. After copying, every file is checked again. (That
-  also holds for a folder someone fixed by hand earlier: anyone who had it open then
-  may still have it open. A new folder is the safe choice.)
-- **Upgrades:** an installed copy of the same or a newer version is kept, and said so;
-  add `--force` to replace it. A drive mounted from the installed copy must be unmounted first.
-- **The menu** is added for every account on the computer, as the program is installed for
-  all of them. A standard user who clicks Mount and has an administrator's password typed
-  at the prompt can open the drive too: it is granted to the account signed in to that
-  desktop as well as the administrator's. If Windows cannot name that account, it is
-  refused; mount from a console with `--all-users` instead.
-- **Upgrading from before 0.7.4:** earlier versions added the menu for one account only.
-  `--install` and `--uninstall` clear that entry, when it runs the same installed program,
-  in the account whose password was typed and in the account that runs them; an
-  `--uninstall` run from the installed copy itself clears the second only while the
-  machine-wide entry exists (it is put there by a 0.7.4 or later `--install`). An entry left
-  in any other account takes precedence over the machine-wide one for that account; it can
-  be deleted there: `HKCU\Software\Classes\SystemFileAssociations\<.wim, .swm or .esd>\shell\WimDriverMount.Mount`.
-- **Several images:** the menu lists up to 16. For a WIM with more, mount from a console
-  with `--index`. The menu is offered for one file at a time.
-- **Removing it:** `--uninstall` (or `--uninstall <folder>`) removes the files `--install`
-  copied and the menu entry, and leaves anything else in the folder. Run from the
-  installed copy itself, the program and its folder go when Windows next restarts. Where
-  ordinary accounts can create folders beside it (in C:\, say), the emptied folder is kept,
-  so nobody can put a program of their own where a menu entry an earlier version added in
-  another account may still point.
+Mount works like Windows' Mount on an ISO:
+- The WIM is mounted in the background at the highest free letter, and File Explorer opens on it.
+- A WIM with several images asks which one first.
+- Each mount asks for administrator approval, because Dokan drives need it.
+- The drive keeps its **Unmount with WIM Driver Mount** entry for when you are done.
+- For a split WIM, right-click the first part.
+- A right-click Mount shows no warnings (for example, that another sign-in's drive letters could not be checked). A mount from a console shows them.
+- A message box appears only if the mount fails or its drive cannot be shown here.
+
+### Details
+
+| Topic | What happens |
+|---|---|
+| Another folder | `--install "D:\Program Files\WimDriverMount"`. It must be on a local internal disk, reached through no link. Its parent must already exist, and only administrators may rename things in any folder above it (a folder made by an ordinary account, or one in the root of most data disks, is refused). Only the last folder is created. |
+| Upgrades | An installed copy of the same or a newer version is kept, and said so. Add `--force` to replace it. A drive mounted from the installed copy must be unmounted first. |
+| The menu | Added for every account on the computer, as the program is installed for all of them. A standard user who clicks Mount and has an administrator's password typed at the prompt can open the drive too: it is granted to the account signed in to that desktop as well as the administrator's. If Windows cannot name that account, it is refused; mount from a console with `--all-users` instead. |
+| Several images | The menu lists up to 16. For a WIM with more, mount from a console with `--index`. The menu is offered for one file at a time. |
+
+**Folder permissions:**
+- An existing folder only administrators can change is left exactly as it is.
+- A new folder is made with owner Administrators, full control for Administrators and SYSTEM, and read and run for Users, with nothing inherited.
+- An existing folder another account can change is refused rather than fixed. Whoever has it open keeps that access whatever its permissions become.
+- After copying, every file is checked again. That also holds for a folder someone fixed by hand earlier: anyone who had it open then may still have it open. A new folder is the safe choice.
+
+**Upgrading from before 0.7.4:** earlier versions added the menu for one account only.
+- `--install` and `--uninstall` clear that entry, when it runs the same installed program, in the account whose password was typed and in the account that runs them.
+- An `--uninstall` run from the installed copy itself clears the second only while the machine-wide entry exists (it is put there by a 0.7.4 or later `--install`).
+- An entry left in any other account takes precedence over the machine-wide one for that account. It can be deleted there: `HKCU\Software\Classes\SystemFileAssociations\<.wim, .swm or .esd>\shell\WimDriverMount.Mount`.
+
+**Removing it:** `--uninstall` (or `--uninstall <folder>`).
+- It removes the files `--install` copied and the menu entry, and leaves anything else in the folder.
+- Run from the installed copy itself, the program and its folder go when Windows next restarts.
+- Where ordinary accounts can create folders beside it (in C:\, say), the emptied folder is kept. That way nobody can put a program of their own where a menu entry an earlier version added in another account may still point.
 
 ## Run a program from a WIM
 
@@ -406,28 +408,30 @@ message box appears only if the mount fails or its drive cannot be shown here.
 .\WimDriverMount.exe --wim https://server/tools.wim --run Tools\setup.exe --run-args "/quiet /log C:\Temp\setup.log"
 ```
 
-This mounts the WIM, runs the program from the drive with its own folder as the working
-directory, waits for it to exit, unmounts, and returns the program's exit code. Use it for
-installers and tools you keep in a WIM instead of copying them to every machine. The path
-is relative to the root of the WIM, and must name a `.exe`, `.com`, `.bat` or `.cmd` file
-(for an MSI, run a `.cmd` that calls `msiexec`).
+Use it for installers and tools you keep in a WIM instead of copying them to every machine.
 
-The program runs with this tool's administrator rights, so check what you run:
+What it does:
+1. Mounts the WIM.
+2. Runs the program from the drive, with its own folder as the working directory.
+3. Waits for it to exit, then unmounts.
+4. Returns the program's exit code.
 
-- `--run-sha256 <hash>` refuses to start the program unless its file matches that hash,
-  and the drive then serves exactly the checked bytes. Only that one file is checked:
-  DLLs and other files beside it are not.
-- For a WIM you do not fully trust, use `--wim-sha256`, which covers every byte. It
-  cannot be used with a split WIM; there, `--run-sha256` is what checks the program.
-- `--run` refuses plain HTTP unless `--wim-sha256` is given.
+The path:
+- is relative to the root of the WIM
+- must name a `.exe`, `.com`, `.bat` or `.cmd` file (for an MSI, run a `.cmd` that calls `msiexec`)
+
+**Check what you run.** The program runs with this tool's administrator rights.
+
+| Check | What it covers |
+|---|---|
+| `--run-sha256 <hash>` | Refuses to start the program unless its file matches that hash; the drive then serves exactly the checked bytes. Only that one file is checked: DLLs and other files beside it are not. |
+| `--wim-sha256 <hash>` | Covers every byte. Use it for a WIM you do not fully trust. It cannot be used with a split WIM; there, `--run-sha256` is what checks the program. |
+
+`--run` refuses plain HTTP unless `--wim-sha256` is given.
 
 ## Run the same mounts every time
 
-For the same mounts on many machines, or as part of a script, put them in a settings file
-(INI). A key is a mount option without its dashes (`wim`, `drive`, `index`, `run`,
-`install-drivers` and so on). Commands such as `unmount`, and `test-mount`, are not settings.
-`[defaults]` applies to every mount and a mount's own key wins (`log` and `evtlog` go only
-in `[defaults]`).
+For the same mounts on many machines, or as part of a script, put them in a settings file (INI).
 
 ```ini
 ; C:\Config\mounts.ini
@@ -452,56 +456,64 @@ background = false
 .\WimDriverMount.exe --mount-config C:\Config\mounts.ini
 ```
 
-Mounts run in file order. A plain mount is left mounted in the background. A mount that
-installs drivers, previews drivers or runs a program runs in the foreground, in turn; it
-needs no setting for that, and `background = false` is allowed only on those.
-Every mount is checked against the real option rules, with a line number, before the first
-one starts, so a mistake on the last mount cannot leave the earlier ones running.
+### How the file works
 
-A mount that runs a program or installs drivers must pin the whole WIM with
-`wim-sha256`. The settings file is protected; the WIM it names may not be, and whoever
-could change that WIM would otherwise choose what runs as administrator, or which driver
-is installed. `run-sha256` alone is not enough here: Windows loads a program's DLLs from
-its own folder first, and those are not checked. (So a settings file cannot run a
-program or install drivers from a split WIM, which `wim-sha256` cannot check.)
+- A key is a mount option without its dashes (`wim`, `drive`, `index`, `run`, `install-drivers` and so on).
+- Commands such as `unmount`, and `test-mount`, are not settings.
+- `[defaults]` applies to every mount, and a mount's own key wins.
+- `log` and `evtlog` go only in `[defaults]`.
 
-The settings file must be on an internal disk: a drive Windows reports as local and fixed,
-whose disk is not on USB, FireWire, an SD/MMC bus or iSCSI, and is not a virtual disk
-(VHD/VHDX, such as a Dev Drive stored in a VHDX file). USB hard disks call themselves fixed.
-On a share, an external disk or an attached virtual disk its permissions may have been set
-on another machine (a hostile server can report any owner), so they prove nothing here;
-copy the file to a local folder.
-A volume Windows will not describe, such as one spanning several disks, is refused too.
+### How it runs
 
-**Why `--protect-config`.** A settings file can install drivers and run programs with
-administrator rights, so it is refused unless only administrators can change it — the
-file *and* its folder, since write access to the folder is enough to replace the file.
-Your own account does not count as an administrator here: it also runs unelevated, and
-any program you run without elevation could then rewrite the file. Windows makes you the
-owner of a file you create, even elevated, so a settings file you wrote needs
-`--protect-config` once; it makes the Administrators group the owner.
-Under `%ProgramFiles%` the folder permissions are already right, but `--protect-config` will
-not change anything there, so a file you write there stays owned by you and is refused; use a
-folder of its own such as `C:\Config` instead. Two other obvious places are unsafe: a folder created at the
-root of `C:` lets Authenticated Users write, and a new folder under `C:\ProgramData` lets
-Users write. `--protect-config` sets the file and its folder (nothing else) to
-administrators and SYSTEM only, prints the permissions before and after, and prints the
-file's SHA-256 and contents: protecting makes the file trustworthy from now on, but anyone
-who could write it before could have changed it, so read what it says. It refuses:
+- Mounts run in file order.
+- A plain mount is left mounted in the background.
+- A mount that installs drivers, previews drivers or runs a program runs in the foreground, in turn. It needs no setting for that, and `background = false` is allowed only on those.
+- Every mount is checked against the real option rules, with a line number, before the first one starts. So a mistake on the last mount cannot leave the earlier ones running.
 
-- a file another program has open for writing (close it and try again);
-- a file or folder that an account other than you, administrators or SYSTEM owns or may
-  change the permissions of: such an account may already hold a handle that keeps that power after
-  protecting, and nothing can take it away. Have an administrator create a new folder
-  and file instead. Permissions tightened by hand earlier, while someone held such a
-  handle, cannot be detected;
-- a file not on an internal disk (see above);
-- a file or folder reached through a link or junction, or a file with other names (hard links);
-- a drive root; anything inside Windows or Program Files; ProgramData, Temp and your
-  AppData folders themselves; a user profile, or any folder directly in one (`C:\Users\<name>\Config` too);
-- a folder that holds other folders.
+### Running a program or installing drivers needs `wim-sha256`
 
-Give the settings file a folder of its own, such as `C:\Config`.
+A mount that runs a program or installs drivers must pin the whole WIM with `wim-sha256`.
+- Why: the settings file is protected, but the WIM it names may not be. Whoever could change that WIM would otherwise choose what runs as administrator, or which driver is installed.
+- `run-sha256` alone is not enough here: Windows loads a program's DLLs from its own folder first, and those are not checked.
+- So a settings file cannot run a program or install drivers from a split WIM, which `wim-sha256` cannot check.
+
+### The file must be on an internal disk
+
+| Allowed | Refused |
+|---|---|
+| A drive Windows reports as local and fixed, whose disk is not on USB, FireWire, an SD/MMC bus or iSCSI, and is not a virtual disk | USB hard disks (they call themselves fixed); shares; external disks; virtual disks (VHD/VHDX, such as a Dev Drive stored in a VHDX file); a volume Windows will not describe, such as one spanning several disks |
+
+Why: on a share, an external disk or an attached virtual disk, the file's permissions may have been set on another machine (a hostile server can report any owner), so they prove nothing here. Copy the file to a local folder.
+
+### Protect the file with `--protect-config`
+
+Run `--protect-config` once on a settings file you wrote. It makes the Administrators group the owner.
+
+Why it is needed:
+- A settings file can install drivers and run programs with administrator rights. So it is refused unless only administrators can change it: the file *and* its folder, since write access to the folder is enough to replace the file.
+- Your own account does not count as an administrator here. It also runs unelevated, and any program you run without elevation could then rewrite the file.
+- Windows makes you the owner of a file you create, even elevated.
+
+Where to put it: a folder of its own, such as `C:\Config`.
+
+| Place | Problem |
+|---|---|
+| Under `%ProgramFiles%` | The folder permissions are already right, but `--protect-config` will not change anything there, so a file you write there stays owned by you and is refused. |
+| A folder created at the root of `C:` | Lets Authenticated Users write. |
+| A new folder under `C:\ProgramData` | Lets Users write. |
+
+What `--protect-config` does:
+- Sets the file and its folder (nothing else) to administrators and SYSTEM only.
+- Prints the permissions before and after.
+- Prints the file's SHA-256 and contents. Protecting makes the file trustworthy from now on, but anyone who could write it before could have changed it, so read what it says.
+
+It refuses:
+- a file another program has open for writing (close it and try again)
+- a file or folder that an account other than you, administrators or SYSTEM owns or may change the permissions of. Such an account may already hold a handle that keeps that power after protecting, and nothing can take it away. Have an administrator create a new folder and file instead. Permissions tightened by hand earlier, while someone held such a handle, cannot be detected.
+- a file not on an internal disk (see [above](#the-file-must-be-on-an-internal-disk))
+- a file or folder reached through a link or junction, or a file with other names (hard links)
+- a drive root; anything inside Windows or Program Files; ProgramData, Temp and your AppData folders themselves; a user profile, or any folder directly in one (`C:\Users\<name>\Config` too)
+- a folder that holds other folders
 
 ## If something went wrong
 
@@ -513,90 +525,96 @@ Give the settings file a folder of its own, such as `C:\Config`.
 | You want to see what an interrupted driver install recorded | `.\WimDriverMount.exe --inspect-driver-journal <ID>`, with the ID printed when the install started |
 | The install ran on version 0.8.0 to 0.9.0, which kept journals in AppData | `.\WimDriverMount.exe --inspect-legacy-driver-journal <ID>` |
 
-Journal inspection only reads, and never retries anything. It says whether the journal is
-consistent, how many calls finished, whether one was left unfinished and whether a restart
-was recorded; it does not name devices or packages, and cannot say what Windows changed. 
+Journal inspection only reads, and never retries anything.
+- It says: whether the journal is consistent, how many calls finished, whether one was left unfinished, and whether a restart was recorded.
+- It does not name devices or packages, and cannot say what Windows changed.
 
-**Logs.** Two optional logs, both off unless you ask:
+### Logs
 
-- `--log <path>` appends this run's messages to a text file, each line with the date,
-  time and process number, for example `--log C:\Logs\wim.log`. A background mount keeps
-  writing to the same file, including why it failed if it does. The output of a program
-  started with `--run` is not included. The folder must already exist. Give its real
-  path: a link, a junction or a SUBST drive letter on the way is refused (on the command
-  line a mapped network drive is turned into its `\\server\share` path; in a settings
-  file, write the `\\server\share` path yourself). If the file cannot be opened
-  safely, the run warns and carries on without it; when the folder is one only
-  administrators can write and the command asks for administrator rights, the
-  administrator copy tries it again and logs from there.
-- `--evtlog` also writes plain-sentence entries to the Windows Application event log
-  (source WIM Driver Mount): IDs 1000–1005 for success, 2000–2005 for failure, 2900 for
-  failure details from a background mount or from removing Dokan (error types and codes
-  only). If an entry cannot be written, the run says so; its result and exit code stand.
+Two optional logs, both off unless you ask:
 
-In a settings file they are `log = C:\Logs\wim.log` (a full path) and `evtlog = true`, and
-they go in `[defaults]`: they apply to the whole run.
+| Option | In a settings file (`[defaults]` only) | What it writes |
+|---|---|---|
+| `--log <path>` | `log = C:\Logs\wim.log` (a full path) | This run's messages, appended to a text file |
+| `--evtlog` | `evtlog = true` | Plain-sentence entries in the Windows Application event log (source WIM Driver Mount) |
+
+Both apply to the whole run.
+
+**`--log`**, for example `--log C:\Logs\wim.log`:
+- Each line has the date, time and process number.
+- A background mount keeps writing to the same file, including why it failed if it does.
+- The output of a program started with `--run` is not included.
+- The folder must already exist. Give its real path: a link, a junction or a SUBST drive letter on the way is refused. On the command line a mapped network drive is turned into its `\\server\share` path; in a settings file, write the `\\server\share` path yourself.
+- If the file cannot be opened safely, the run warns and carries on without it. When the folder is one only administrators can write and the command asks for administrator rights, the administrator copy tries it again and logs from there.
+
+**`--evtlog`** event IDs:
+
+| ID | Meaning |
+|---|---|
+| 1000–1005 | Success |
+| 2000–2005 | Failure |
+| 2900 | Failure details from a background mount or from removing Dokan (error types and codes only) |
+
+If an entry cannot be written, the run says so. Its result and exit code stand.
 
 ## Dokan
 
-Mounting uses Dokan, a free driver that lets a program provide a drive. The download
-includes Dokan's installer, `Dokan_x64.msi` (`Dokan_ARM64.msi` on ARM64), beside
-`WimDriverMount.exe`, so an offline computer needs no internet (unless `--get-dokan`
-is used without a local file or share). The first mount installs
-Dokan, from the first of these that applies:
+Mounting uses Dokan, a free driver that lets a program provide a drive.
+- The download includes Dokan's installer, `Dokan_x64.msi` (`Dokan_ARM64.msi` on ARM64), beside `WimDriverMount.exe`.
+- So an offline computer needs no internet (unless `--get-dokan` is used without a local file or share).
+- **Dokan stays installed** for later runs.
+
+### Where Dokan comes from
+
+The first mount installs Dokan, from the first of these that applies:
 
 1. `--get-dokan <source>`: the installer at that path, network path, or HTTPS URL.
-2. `--get-dokan` on its own: the release this program is tested with (Dokan 2.3.1),
-   downloaded from GitHub and checked against its exact SHA-256. In a settings file,
-   write `get-dokan = tested`.
+2. `--get-dokan` on its own: the release this program is tested with (Dokan 2.3.1), downloaded from GitHub and checked against its exact SHA-256. In a settings file, write `get-dokan = tested`.
 3. `Dokan_x64.msi` (`Dokan_ARM64.msi` on ARM64) beside `WimDriverMount.exe`.
 4. The latest official release, downloaded from GitHub.
 
-Whichever it is, it is installed only if Windows accepts its signature, the signer is
-Dokan's publisher (LEOSAC, matched exactly by organisation and French company
-registration number), and the package declares Dokan's own upgrade code and version 2.3
-or a later 2.x. Any official
-signed release therefore works — from a file share, a USB stick or an archive — and a
-tampered or look-alike one is refused. Only `--get-dokan` on its own is pinned to one
-build's hash; otherwise newer 2.x releases are accepted, so Dokan's fixes reach you.
-`--get-dokan` is used only when Dokan is not installed: if a newer Dokan ever breaks
-mounting, uninstall it in Settings > Apps, restart Windows, then run with `--get-dokan` on
-its own to install the tested one.
-Certificate revocation is not checked. `--no-install-dokan` refuses to install at all.
+`--no-install-dokan` refuses to install at all.
 
-**Dokan stays installed** for later runs.
+### What is checked
 
-`--remove-dokan` uninstalls it after that run, if WIM Driver Mount installed it (a Dokan
-you installed yourself is left alone, as is one another mount is still using). After Dokan has
-mounted a drive, removing it (measured with Dokan 2.3.0) leaves its driver loaded until
-Windows restarts, and installing it again before then fails. The run says so, and a mount
-tried before that restart says so too while Windows reports the driver still stopping.
+Whichever it is, it is installed only if all of these hold:
+- Windows accepts its signature.
+- The signer is Dokan's publisher (LEOSAC, matched exactly by organisation and French company registration number).
+- The package declares Dokan's own upgrade code and version 2.3 or a later 2.x.
+
+So any official signed release works (from a file share, a USB stick or an archive), and a tampered or look-alike one is refused.
+
+- Only `--get-dokan` on its own is pinned to one build's hash. Otherwise newer 2.x releases are accepted, so Dokan's fixes reach you.
+- Certificate revocation is not checked.
+
+**If a newer Dokan breaks mounting:** `--get-dokan` is used only when Dokan is not installed. So uninstall Dokan in Settings > Apps, restart Windows, then run with `--get-dokan` on its own to install the tested one.
+
+### Removing Dokan
+
+`--remove-dokan` uninstalls it after that run, if WIM Driver Mount installed it.
+- A Dokan you installed yourself is left alone, as is one another mount is still using.
+- After Dokan has mounted a drive, removing it (measured with Dokan 2.3.0) leaves its driver loaded until Windows restarts. Installing it again before then fails.
+- The run says so. A mount tried before that restart says so too, while Windows reports the driver still stopping.
 
 ## Results and elevation
 
-Operations ask for administrator approval. Typed in a console (PowerShell, Command Prompt,
-Terminal), the work then runs hidden and its output appears in that same window: no second
-window, nothing to press, and the command returns the real exit code. `--help`, `--version`,
-journal inspection and `--capture-drivers ... --whatif` need no approval at all. Output redirected to a
-file (`> log.txt`) still goes to the screen this way; to capture it, run from an
-administrator console.
+Operations ask for administrator approval. What happens next depends on how you started it:
 
-Dropped onto the program or started by double-click, there is no console to share, so the
-work runs in an administrator window of its own, which waits for Enter at the end; add
-`--no-pause` to have it close by itself (the exit code then tells you how it went).
+| Started from | What happens |
+|---|---|
+| A console (PowerShell, Command Prompt, Terminal) | The work runs hidden and its output appears in that same window: no second window, nothing to press. The command returns the real exit code. |
+| Dropped onto the program, or double-clicked | There is no console to share, so the work runs in an administrator window of its own, which waits for Enter at the end. Add `--no-pause` to have it close by itself (the exit code then tells you how it went). |
+| The right-click **Unmount with WIM Driver Mount** | No console window: only the administrator prompt, then nothing if it worked. If it fails, or Windows must restart afterwards, a message box says so. |
 
-The first time a newly downloaded copy asks for approval, the prompt can take tens of
-seconds to appear (measured: 44 seconds on one PC, then 3 seconds for the same file, and
-under half a second for a copy not marked as downloaded). No prompt appears meanwhile. This is
-Windows checking the file before it elevates it, most likely Microsoft Defender's first-time
-cloud check of an unsigned program it has not seen; this program has already made its
-request by then. Later runs of the same file are quick.
+- No approval needed for: `--help`, `--version`, journal inspection and `--capture-drivers ... --whatif`.
+- From a console, output redirected to a file (`> log.txt`) still goes to the screen. To capture it, run from an administrator console.
 
-The right-click **Unmount with WIM Driver Mount** shows no console window: only the
-administrator prompt, then nothing if it worked. If it fails, or Windows must restart
-afterwards, a message box says so.
+**A slow first prompt.** The first time a newly downloaded copy asks for approval, the prompt can take tens of seconds to appear. No prompt appears meanwhile.
+- Measured: 44 seconds on one PC, then 3 seconds for the same file, and under half a second for a copy not marked as downloaded.
+- This is Windows checking the file before it elevates it, most likely Microsoft Defender's first-time cloud check of an unsigned program it has not seen. This program has already made its request by then.
+- Later runs of the same file are quick.
 
-Exit codes:
+### Exit codes
 
 | Code | Meaning |
 |---|---|
@@ -604,48 +622,46 @@ Exit codes:
 | 3010 | Restart required |
 | 1 | Failed, or the outcome is unknown |
 | 2 | Journal inspection was given something that is not a journal ID |
-| other | With `--run`, the program's own exit code (a settings-file run returns 1 instead, and names the program's code; there a program's 3010 counts as restart required). A single `--run` whose program exits 3010 cannot be told from "restart required" by the code alone; the run prints "The program exited with code 3010." when it was the program. |
+| other | With `--run`, the program's own exit code |
 
-`--whatif` checks a command without mounting or installing anything: it opens the WIM
-read-only, reads the chosen image, checks Dokan, and says what it would do. It still asks
-for administrator approval (only `--capture-drivers --whatif` does not), and cannot be
-combined with `--run`.
+Notes on `--run` exit codes:
+- A settings-file run returns 1 instead, and names the program's code. There, a program's 3010 counts as restart required.
+- A single `--run` whose program exits 3010 cannot be told from "restart required" by the code alone. The run prints "The program exited with code 3010." when it was the program.
+
+### `--whatif`
+
+`--whatif` checks a command without mounting or installing anything.
+- It opens the WIM read-only, reads the chosen image, checks Dokan, and says what it would do.
+- It still asks for administrator approval (only `--capture-drivers --whatif` does not).
+- It cannot be combined with `--run`.
 
 ## Known limits: your own environment variables and console
 
-When Windows starts WIM Driver Mount with administrator rights, it gives it your account's
-environment variables, and any program you run without elevation can change those
-(they are stored in `HKCU\Environment`).
+When Windows starts WIM Driver Mount with administrator rights, it gives it your account's environment variables. Any program you run without elevation can change those (they are stored in `HKCU\Environment`).
 
-- **.NET runtime settings do not apply.** WIM Driver Mount is compiled to native code
-  (NativeAOT) and does not use the standard .NET runtime (CoreCLR), so variables such as
-  `CORECLR_ENABLE_PROFILING`, `DOTNET_GCName`, `DOTNET_DiagnosticPorts` and
-  `DOTNET_STARTUP_HOOKS`, which make an ordinary .NET program load other code as it starts,
-  have no effect on it. Its built-in memory manager still reads a few `DOTNET_GC...`
-  tuning settings.
-- **Variables in `--run` arguments.** A `.bat` or `.cmd` program is started through
-  Command Prompt, which expands `%NAME%` in its arguments. A value you did not expect can
-  change what that command does.
+| Variables | Effect |
+|---|---|
+| .NET runtime settings | Do not apply. WIM Driver Mount is compiled to native code (NativeAOT) and does not use the standard .NET runtime (CoreCLR). So variables such as `CORECLR_ENABLE_PROFILING`, `DOTNET_GCName`, `DOTNET_DiagnosticPorts` and `DOTNET_STARTUP_HOOKS`, which make an ordinary .NET program load other code as it starts, have no effect on it. Its built-in memory manager still reads a few `DOTNET_GC...` tuning settings. |
+| Variables in `--run` arguments | A `.bat` or `.cmd` program is started through Command Prompt, which expands `%NAME%` in its arguments. A value you did not expect can change what that command does. |
 
-This is not specific to WIM Driver Mount: the same variables affect every elevated batch
-file you start. If programs you run without elevation might be hostile, avoid `%NAME%` in
-`run-args`.
+This is not specific to WIM Driver Mount: the same variables affect every elevated batch file you start. If programs you run without elevation might be hostile, avoid `%NAME%` in `run-args`.
 
-**Sharing your console.** When the work writes into the window you typed in, any program
-you run without elevation can also attach to that window and send it Ctrl+C, which stops
-the work at that moment, as a power cut would. Nothing is ever read from that window, and
-for that reason a program started with `--run` opens in a window of its own (which closes
-when it exits). Ctrl+C in your window does not reach that program; close its window, or the
-program, to end it, and the mount closes after it. An interrupted driver install can be checked with `--inspect-driver-journal`.
+**Sharing your console.**
+- When the work writes into the window you typed in, any program you run without elevation can also attach to that window and send it Ctrl+C. That stops the work at that moment, as a power cut would.
+- Nothing is ever read from that window. For that reason, a program started with `--run` opens in a window of its own (which closes when it exits).
+- Ctrl+C in your window does not reach that program. Close its window, or the program, to end it, and the mount closes after it.
+- An interrupted driver install can be checked with `--inspect-driver-journal`.
 
 ## Build
 
-You need a Windows PC with an x64 processor, the
-[.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0),
-[Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/) with the
-"MSVC x64/x86 build tools" and "MSVC ARM64 build tools" components (the program is compiled
-to native code, which needs Microsoft's C++ linker), and internet access (the build
-downloads its NuGet packages). An x64 PC builds for x64 and for ARM64 PCs alike.
+You need:
+
+| Requirement | Details |
+|---|---|
+| A Windows PC with an x64 processor | An x64 PC builds for x64 and for ARM64 PCs alike. |
+| [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) | |
+| [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/) | With the "MSVC x64/x86 build tools" and "MSVC ARM64 build tools" components. The program is compiled to native code, which needs Microsoft's C++ linker. |
+| Internet access | The build downloads its NuGet packages. |
 
 1. Download Dokan's installer from its
    [2.3.1.1000 release](https://github.com/dokan-dev/dokany/releases/tag/v2.3.1.1000):
@@ -663,10 +679,8 @@ downloads its NuGet packages). An x64 PC builds for x64 and for ARM64 PCs alike.
    `powershell -ExecutionPolicy Bypass -File .\src\build.ps1 -DokanMsiPath ...`.
 3. The program and everything it needs are in `src\publish` (or the folder you name with
    `-OutputPath`): `WimDriverMount.exe`, Dokan's installer and the `licenses` folder. Copy
-   that folder to the PC and run `WimDriverMount.exe`. The symbol file for reading crash
-   reports is not in the package: it is kept beside the build log in the temp folder, or
-   in the folder you name with `-SymbolsPath`. It matches only that exact build, so keep
-   it with the release.
+   that folder to the PC and run `WimDriverMount.exe`.
 
-Try it on a test machine or VM before a real one: it runs as administrator and installs
-drivers.
+The symbol file for reading crash reports is not in the package. It is kept beside the build log in the temp folder, or in the folder you name with `-SymbolsPath`. It matches only that exact build, so keep it with the release.
+
+Try it on a test machine or VM before a real one: it runs as administrator and installs drivers.
