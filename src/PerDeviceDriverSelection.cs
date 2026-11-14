@@ -39,11 +39,18 @@ internal static class PerDeviceDriverSelection
             return new(null, "Installed driver date or version is unavailable.");
         if (candidates.Any(match => match.Model.DriverVersion?.Date is null || match.Model.DriverVersion.Version is null))
             return new(null, "A matching WIM driver has no date (DriverVer), so it cannot be compared.");
+        // The installed driver itself, offered again by the WIM (same INF, install section,
+        // date and version), is never an upgrade: when it ranks best, Windows marks that
+        // node as the installed driver and keeps it, even where the WIM's copy matches a
+        // more specific ID. It still ranks, so a driver it beats is not chosen either.
+        // Seen comparing with Windows' own choice on real hardware.
+        Decision Final(Decision decision) => decision.Candidate is { } chosen && !device.Unbound &&
+            IsInstalledDriver(chosen, device, installedDate, installedVersion) ? new(null, NotNewer) : decision;
 
         // The device property never carries the bound driver's signer byte, so
         // this is its rank without one, as CandidateRank is for a candidate.
         uint? installedEstimate = device.Rank is uint fullRank ? fullRank & 0x00FFFFFF : null;
-        if (windows is null) return Decide(device, candidates, CandidateRank, installedEstimate, installedDate, installedVersion, signed: false);
+        if (windows is null) return Final(Decide(device, candidates, CandidateRank, installedEstimate, installedDate, installedVersion, signed: false));
 
         // Windows' rank is the estimate plus a signer score of at least the
         // floor, never less. So the decision is first made with every rank
@@ -90,7 +97,7 @@ internal static class PerDeviceDriverSelection
             {
                 uint best = candidates.Min(RankOf);
                 var unasked = candidates.Where(match => RankOf(match) == best && !known.ContainsKey(match)).ToArray();
-                if (unasked.Length == 0) return decision;
+                if (unasked.Length == 0) return Final(decision);
                 foreach (var match in unasked)
                     if (!AskCandidate(match)) return new(null, CannotRankCandidate);
             }
@@ -101,6 +108,12 @@ internal static class PerDeviceDriverSelection
             else return decision;
         }
     }
+
+    private static bool IsInstalledDriver(InfIndex.ModelEntry model, DriverDetection.InstalledDevice device, DateOnly installedDate, ulong installedVersion) =>
+        device.OriginalInf is { Length: > 0 } original && device.Section is { Length: > 0 } section &&
+        string.Equals(Path.GetFileName(model.Path), original, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(model.ActualInstallSection ?? model.InstallSection, section, StringComparison.OrdinalIgnoreCase) &&
+        model.DriverVersion?.Date == installedDate && model.DriverVersion.Version == installedVersion;
 
     private const string CannotRankInstalled = "Windows could not rank the installed driver, so nothing was chosen.",
         CannotRankCandidate = "Windows could not rank a matching WIM driver, so nothing was chosen.";
@@ -177,8 +190,14 @@ internal static class PerDeviceDriverSelection
     // consult such a list either -- it recomputes the winners and applying one
     // that is already present changes nothing. So this reports the extension
     // Windows would apply, not whether it is missing.
+    // Windows' extension rank includes the signer score (measured: the same Authenticode
+    // extension ranked 00FF2001 with "Treat all digitally signed drivers equally" on and
+    // 0FFF2001 with it off), but it lists no extension INF in any driver list, so it cannot
+    // be asked. With the policy on (signersEqual) every signed package scores the same, so
+    // rank, date and version decide, as here. With it off, extensions from different INFs
+    // competing for one ExtensionId could be decided by who signed them: none is guessed.
     internal static IReadOnlyList<ExtensionDecision> SelectExtensions(DriverDetection.InstalledDevice device,
-        IReadOnlyList<InMemoryDriverMatcher.Match> matches, bool indexComplete)
+        IReadOnlyList<InMemoryDriverMatcher.Match> matches, bool indexComplete, bool signersEqual = true)
     {
         if (device.IdsUncertain || device.CaptureError is not null || !indexComplete) return [];
         var result = new List<ExtensionDecision>();
@@ -189,6 +208,11 @@ internal static class PerDeviceDriverSelection
             if (candidates.Any(match => match.Model.DriverVersion?.Date is null || match.Model.DriverVersion.Version is null))
             {
                 result.Add(new(group.Key, null, "A matching extension has no date (DriverVer), so it cannot be compared."));
+                continue;
+            }
+            if (!signersEqual && candidates.Select(match => match.Model.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1)
+            {
+                result.Add(new(group.Key, null, "Several extensions in the WIM compete, and with \"Treat all digitally signed drivers equally\" off who signed each could decide; Windows cannot be asked to rank extensions, so none was chosen."));
                 continue;
             }
             var (winners, _, _, _) = Rank(candidates);

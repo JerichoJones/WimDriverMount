@@ -79,6 +79,9 @@ internal sealed class WindowsRankSource : IDisposable
 
     internal PerDeviceDriverSelection.WindowsRanks Ranks => new(Installed, Candidate, InstalledAsEstimated, SignerFloor);
 
+    // Every signed package scores the same (the policy is on or not configured).
+    internal bool SignersEqual => allSigningEqual;
+
     // The "Treat all digitally signed drivers equally" policy (DeviceInstallation.admx:
     // 1 enabled, 0 disabled). Not configured behaves as enabled since Windows 7.
     // Checked against Windows' own ranks in all three states.

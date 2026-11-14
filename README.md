@@ -97,7 +97,8 @@ How the tool checks:
 - Who signed a package is known only once its catalog is checked.
 - So wherever the signer could change the decision, Windows is asked to rank that driver itself. For that, the tool copies just the package's INF and the one catalog it names from the WIM, into a folder under System32 that only administrators can open. The folder is removed afterwards.
 - Devices the signer can't affect cost nothing extra.
-- Extensions are still ranked without the signer, because Windows does not rank them the same way.
+- Extensions: Windows ranks them with the signer too, but it cannot be asked to rank one. With the policy on, every signed extension scores the same, so the choice is exact. With it off, if extensions from different INFs compete for the same kind of extension, that extension is left undecided rather than guessed.
+- The installed driver itself, offered again by the WIM, is never an upgrade: Windows keeps it, even when the WIM's copy matches the device more specifically.
 - Windows checks every signature and does the installation itself.
 
 When Windows won't use a package:
@@ -111,14 +112,17 @@ When Windows won't use a package:
 
 ### How closely it matches Windows
 
-Compared with Windows' own results on one PC and one driver set:
+Checked against Windows' own choice, without installing anything: for every device, Windows was handed the same drivers (plus the installed one) and asked which it would pick.
 
 | What was compared | Matched Windows |
 |---|---|
+| Two PCs, each against its whole driver store (every version of every package, 1,661 packages in all), keeping or replacing the installed driver | 294 of 294 and 273 of 273 devices |
+| The same, as a fresh install (installed driver ignored) | 294 of 294 and 273 of 273 devices, including all 152 where several drivers competed |
+| Signer rules: both policy states, with inbox, WHQL, Authenticode and unsigned packages, previewing and installing (test VM) | 12 of 12 cases |
 | INF parsing | Identical on 949 INFs |
 | Candidate lists | 260 of 260 devices |
-| Chosen driver | 127 of 127 devices (and 2 of 2 extensions) |
-| Signer rules: both policy states, with inbox, WHQL, Authenticode and unsigned packages, previewing and installing | 12 of 12 cases |
+
+Measured not to change the choice: drivers marked `ExcludeFromSelect` (they competed on 434 devices) and drivers of another device class (49 devices); both sides agreed on every one. Microsoft also ranks a "basic driver" below a specific one, but no INF on Windows 11 is marked as one (none of 4,723 in-box drivers).
 
 That is not a guarantee for every machine.
 

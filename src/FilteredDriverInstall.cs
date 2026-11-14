@@ -77,12 +77,13 @@ internal static class FilteredDriverInstall
     }
 
     private static Func<DriverDetection.InstalledDevice, Func<InfIndex.ModelEntry, bool>, CancellationToken, IReadOnlyList<PerDeviceDriverSelection.ExtensionDecision>> ExtensionSelector(
-        InfCollectedIndex index, CancellationToken cancellation)
+        InfCollectedIndex index, CancellationToken cancellation, WindowsRankSource? ranks = null)
     {
         var matcher = index.CreateExtensionMatcher(cancellation);
+        bool signersEqual = ranks?.SignersEqual ?? true;
         return (device, allowed, token) => PerDeviceDriverSelection.SelectExtensions(device,
             matcher.Find(device.HardwareIds, device.CompatibleIds, token).Where(match => allowed(match.Model)).ToList(),
-            index.IsSelectionCompleteFor(device.HardwareIds, device.CompatibleIds));
+            index.IsSelectionCompleteFor(device.HardwareIds, device.CompatibleIds), signersEqual);
     }
 
     // Windows' own verdict on a package: SetupAPI's errors (0xE000xxxx; a tampered
@@ -110,7 +111,7 @@ internal static class FilteredDriverInstall
             output.WriteLine($"Skipped extension INF {InWim(item.Path)}: {item.Reason} It is not applied to any device.");
         using var ranks = WindowsRankSource.For(index);
         var select = Selector(index, cancellation, ranks);
-        var selectExtensions = ExtensionSelector(index, cancellation);
+        var selectExtensions = ExtensionSelector(index, cancellation, ranks);
         int devices = 0, install = 0, undecided = 0, extend = 0;
         foreach (var device in DriverDetection.CaptureInstalledDevices(cancellation))
         {
@@ -260,7 +261,7 @@ internal static class FilteredDriverInstall
                 ranks = WindowsRankSource.For(index);
                 api = new(DriverDetection.CaptureInstalledDevices, Selector(index, cancellation, ranks),
                     DriverDetection.InstallSelectedDevice, CM_WaitNoPendingInstallEvents, SetupSetNonInteractiveMode,
-                    ExtensionSelector(index, cancellation), DriverDetection.InstallExtension);
+                    ExtensionSelector(index, cancellation, ranks), DriverDetection.InstallExtension);
                 foreach (var item in index.UnresolvedFiles)
                     Console.WriteLine($"Unparsed INF {SafeText.Path(item.ImagePath)}: {item.Reason} It blocks {(item.Ids is null ? "every device" : $"devices with any of its {item.Ids.Count} IDs")}.");
                 foreach (var item in index.ScopedUnresolved)
