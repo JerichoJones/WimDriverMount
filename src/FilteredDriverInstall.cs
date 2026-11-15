@@ -83,9 +83,10 @@ internal static class FilteredDriverInstall
         var matcher = index.CreateExtensionMatcher(cancellation);
         bool signersEqual = ranks?.SignersEqual ?? true;
         var files = PerDeviceDriverSelection.FilesOf(index.Image, index.Mount);
+        var packageKey = files is null ? null : PerDeviceDriverSelection.CachedPackageKeys(files);
         return (device, allowed, token) => PerDeviceDriverSelection.SelectExtensions(device,
             matcher.Find(device.HardwareIds, device.CompatibleIds, token).Where(match => allowed(match.Model)).ToList(),
-            index.IsSelectionCompleteFor(device.HardwareIds, device.CompatibleIds), signersEqual, files is null ? null : m => PerDeviceDriverSelection.PackageKey(m, files));
+            index.IsSelectionCompleteFor(device.HardwareIds, device.CompatibleIds), signersEqual, packageKey);
     }
 
     // Windows' own verdict on a package: SetupAPI's errors (0xE000xxxx; a tampered

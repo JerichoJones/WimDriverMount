@@ -116,10 +116,11 @@ internal static class PerDeviceDriverSelection
     private static bool IsInstalledDriver(InfIndex.ModelEntry model, DriverDetection.InstalledDevice device, DateOnly installedDate, ulong installedVersion,
         Func<InfIndex.ModelEntry, DriverDetection.InstalledDevice, bool>? sameInf) =>
         device.OriginalInf is { Length: > 0 } original && device.Section is { Length: > 0 } section &&
-        (sameInf is null || sameInf(model, device)) &&
         string.Equals(Path.GetFileName(model.Path), original, StringComparison.OrdinalIgnoreCase) &&
         string.Equals(model.ActualInstallSection ?? model.InstallSection, section, StringComparison.OrdinalIgnoreCase) &&
-        model.DriverVersion?.Date == installedDate && model.DriverVersion.Version == installedVersion;
+        model.DriverVersion?.Date == installedDate && model.DriverVersion.Version == installedVersion &&
+        // Last: it reads both files, so only for a candidate that already looks like the installed driver.
+        (sameInf is null || sameInf(model, device));
 
     private const string CannotRankInstalled = "Windows could not rank the installed driver, so nothing was chosen.",
         CannotRankCandidate = "Windows could not rank a matching WIM driver, so nothing was chosen.";
@@ -242,11 +243,14 @@ internal static class PerDeviceDriverSelection
         {
             try
             {
-                if (image.GetFileLength(imagePath) > Max) return null;
+                long length = image.GetFileLength(imagePath);
+                if (length > Max) return null;
                 using var stream = image.OpenFile(imagePath, FileMode.Open, FileAccess.Read);
-                using var memory = new MemoryStream();
-                stream.CopyTo(memory);
-                return memory.Length > Max ? null : memory.ToArray();
+                // Never more than the length the WIM declared, as WindowsRankSource.Copy reads.
+                byte[] bytes = new byte[length];
+                int total = 0;
+                for (int read; (read = stream.Read(bytes, total, bytes.Length - total)) > 0;) total += read;
+                return total == length && stream.ReadByte() < 0 ? bytes : null;
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException or NotSupportedException) { return null; }
         }
@@ -287,6 +291,14 @@ internal static class PerDeviceDriverSelection
         if (files.Read(model.Path) is not { } inf) return model.Path;
         string Hash(byte[] bytes) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
         return Hash(inf) + "|" + string.Join(",", files.CatalogsBeside(model.Path).Select(Hash).Order(StringComparer.Ordinal));
+    }
+
+    // PackageKey once per INF path: the same extension is asked about for every device it
+    // matches and on every pass, and the WIM does not change during a run.
+    internal static Func<InfIndex.ModelEntry, string> CachedPackageKeys(InfFiles files)
+    {
+        var keys = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        return model => keys.TryGetValue(model.Path, out string? key) ? key : keys[model.Path] = PackageKey(model, files);
     }
 
     internal static bool TryVersion(string? value, out ulong result)
