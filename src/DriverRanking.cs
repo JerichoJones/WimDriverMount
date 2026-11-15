@@ -27,7 +27,9 @@ internal static partial class DriverDetection
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetupDiGetSelectedDriverW(IntPtr set, ref DeviceInfo device, ref DriverInfo driver);
     private const uint DifSelectBestCompatDrv = 0x17, AppendDriverList = 0x00040000;
-    private const int NoCompatDrivers = unchecked((int)0xE0000228), NoDriverSelected = unchecked((int)0xE0000212);
+    private const int NoCompatDrivers = unchecked((int)0xE0000228);
+    // ERROR_NO_DRIVER_SELECTED is 0x203 in setupapi.h; 0x212 is ERROR_DEVINFO_LIST_LOCKED.
+    internal const int NoDriverSelected = unchecked((int)0xE0000203);
 
     // The bound driver's rank. Null when Windows lists no installed driver node.
     internal static uint? InstalledDriverRank(string instanceId) => BestRank(instanceId, null, null);
