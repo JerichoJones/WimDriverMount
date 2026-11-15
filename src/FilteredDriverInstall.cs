@@ -31,7 +31,11 @@ internal static class FilteredDriverInstall
         WindowsRankSource? Ranks = null,
         // Lets Windows install its own best driver from the driver store on a device
         // (Decision.Store): nothing from the WIM is staged for it.
-        Func<string, DriverDetection.SelectedInstallResult>? InstallFromStore = null);
+        Func<string, DriverDetection.SelectedInstallResult>? InstallFromStore = null,
+        // Whether the WIM has a function driver for the device among the packages the filter
+        // allows: a match alone, ranking nothing and asking Windows nothing. Run uses it only
+        // to word why a device got no WIM driver. Null: answered through Select.
+        Func<DriverDetection.InstalledDevice, Func<InfIndex.ModelEntry, bool>, CancellationToken, bool>? HasDriver = null);
 
     // A store driver in the shape the final check already uses for a WIM driver: its published
     // INF stands where the WIM path would.
@@ -82,15 +86,21 @@ internal static class FilteredDriverInstall
     internal static string Outcome(DriverDetection.SelectedInstallResult outcome) => JsonSerializer.Serialize(outcome, FilteredDriverJson.Default.SelectedInstallResult);
     internal static string Outcome(DriverDetection.ExtensionInstallResult outcome) => JsonSerializer.Serialize(outcome, FilteredDriverJson.Default.ExtensionInstallResult);
 
-    private static Func<DriverDetection.InstalledDevice, Func<InfIndex.ModelEntry, bool>, CancellationToken, PerDeviceDriverSelection.Decision> Selector(
+    // The selection over the WIM's function drivers, and the cheap question of whether there is
+    // one for a device at all (Dependencies.HasDriver), over the one matcher.
+    private static (Func<DriverDetection.InstalledDevice, Func<InfIndex.ModelEntry, bool>, CancellationToken, PerDeviceDriverSelection.Decision> Select,
+        Func<DriverDetection.InstalledDevice, Func<InfIndex.ModelEntry, bool>, CancellationToken, bool> HasDriver) Selector(
         InfCollectedIndex index, CancellationToken cancellation, WindowsRankSource? ranks = null)
     {
         var matcher = index.CreateMatcher(cancellation);
         var windows = ranks?.Ranks;
         var files = PerDeviceDriverSelection.FilesOf(index.Image, index.Mount);
-        return (device, allowed, token) => PerDeviceDriverSelection.Select(device,
+        return ((device, allowed, token) => PerDeviceDriverSelection.Select(device,
             matcher.Find(device.HardwareIds, device.CompatibleIds, token).Where(match => allowed(match.Model)).ToList(),
-            index.IsSelectionCompleteFor(device.HardwareIds, device.CompatibleIds), windows, files is null ? null : (m, d) => PerDeviceDriverSelection.SameAsPublishedInf(m, d, files));
+            index.IsSelectionCompleteFor(device.HardwareIds, device.CompatibleIds), windows, files is null ? null : (m, d) => PerDeviceDriverSelection.SameAsPublishedInf(m, d, files)),
+            // The same candidates Select would rank: platform-applicable function models.
+            (device, allowed, token) => matcher.Find(device.HardwareIds, device.CompatibleIds, token)
+                .Any(match => allowed(match.Model) && match.Model.PlatformApplicable && match.Model.ExtensionId is null));
     }
 
     private static Func<DriverDetection.InstalledDevice, Func<InfIndex.ModelEntry, bool>, CancellationToken, IReadOnlyList<PerDeviceDriverSelection.ExtensionDecision>> ExtensionSelector(
@@ -129,17 +139,8 @@ internal static class FilteredDriverInstall
     private static string InWim(string path) =>
         path.Length > 3 && path[1] == ':' && path[2] == '\\' ? SafeText.Path(path[2..]) + " (in the WIM)" : SafeText.Path(path);
 
-    // The same capture and selection as Run, without staging or installing. Asking the store
-    // (StoreBest) goes through the device class's installer, as an installation does, so Windows
-    // is told not to show dialogs here either: a preview has no one to answer them.
+    // The same capture and selection as Run, without staging or installing.
     internal static int Preview(InfCollectedIndex index, TextWriter output, CancellationToken cancellation)
-    {
-        bool previous = SetupSetNonInteractiveMode(true);
-        try { return PreviewDevices(index, output, cancellation); }
-        finally { SetupSetNonInteractiveMode(previous); }
-    }
-
-    private static int PreviewDevices(InfCollectedIndex index, TextWriter output, CancellationToken cancellation)
     {
         foreach (var item in index.UnresolvedFiles)
             output.WriteLine($"Unparsed INF {SafeText.Path(item.ImagePath)}: {item.Reason} It blocks {(item.Ids is null ? "every device" : $"devices with any of its {item.Ids.Count} IDs")}.");
@@ -148,41 +149,59 @@ internal static class FilteredDriverInstall
         foreach (var item in index.SkippedExtensions)
             output.WriteLine($"Skipped extension INF {InWim(item.Path)}: {item.Reason} It is not applied to any device.");
         using var ranks = WindowsRankSource.For(index);
-        var select = Selector(index, cancellation, ranks);
+        var select = Selector(index, cancellation, ranks).Select;
         var selectExtensions = ExtensionSelector(index, cancellation, ranks);
-        int devices = 0, install = 0, fromStore = 0, undecided = 0, extend = 0;
-        foreach (var device in DriverDetection.CaptureInstalledDevices(cancellation))
+        return Preview(() => DriverDetection.CaptureInstalledDevices(cancellation), device => select(device, _ => true, cancellation),
+            device => selectExtensions(device, _ => true, cancellation), output, SetupSetNonInteractiveMode);
+    }
+
+    // Every present device's decision, then the counts; the exit code says whether every decision
+    // could be made. Asking the store (StoreBest) goes through the device class's installer, as an
+    // installation does, so Windows is told not to show dialogs here either, for the whole
+    // preview: a preview has no one to answer them. The operations are injected for the tests.
+    internal static int Preview(Func<IReadOnlyList<DriverDetection.InstalledDevice>> capture,
+        Func<DriverDetection.InstalledDevice, PerDeviceDriverSelection.Decision> select,
+        Func<DriverDetection.InstalledDevice, IReadOnlyList<PerDeviceDriverSelection.ExtensionDecision>> selectExtensions,
+        TextWriter output, Func<bool, bool> setNonInteractive)
+    {
+        bool previous = setNonInteractive(true);
+        try
         {
-            devices++;
-            // Extensions are reported on their own lines and never count as the
-            // device's driver: they layer onto whatever the function driver is.
-            foreach (var ext in selectExtensions(device, _ => true, cancellation))
+            int devices = 0, install = 0, fromStore = 0, undecided = 0, extend = 0;
+            foreach (var device in capture())
             {
-                if (ext.Candidate is { } x)
+                devices++;
+                // Extensions are reported on their own lines and never count as the
+                // device's driver: they layer onto whatever the function driver is.
+                foreach (var ext in selectExtensions(device))
                 {
-                    extend++;
-                    output.WriteLine($"EXTEND  {Label(device)}: {ext.Reason}\n  Extension {ext.ExtensionId}: {InWim(x.Path)} [{SafeText.Quote(x.ActualInstallSection)}] " +
-                        $"{x.DriverVersion?.Date:yyyy-MM-dd} {Version(x.DriverVersion?.Version)}");
+                    if (ext.Candidate is { } x)
+                    {
+                        extend++;
+                        output.WriteLine($"EXTEND  {Label(device)}: {ext.Reason}\n  Extension {ext.ExtensionId}: {InWim(x.Path)} [{SafeText.Quote(x.ActualInstallSection)}] " +
+                            $"{x.DriverVersion?.Date:yyyy-MM-dd} {Version(x.DriverVersion?.Version)}");
+                    }
+                    else
+                    {
+                        undecided++;
+                        output.WriteLine($"SKIP    {Label(device)}: extension {ext.ExtensionId}: {ext.Reason}");
+                    }
                 }
-                else
-                {
-                    undecided++;
-                    output.WriteLine($"SKIP    {Label(device)}: extension {ext.ExtensionId}: {ext.Reason}");
-                }
+                var decision = select(device);
+                if (decision.Candidate is not null) install++;
+                else if (decision.Store is not null) fromStore++;
+                // Outranked is a decision to keep the installed driver, not a
+                // failure to decide, so it must not count as undecided or set the
+                // exit code.
+                else if (decision.Reason is not (PerDeviceDriverSelection.NoCandidate or PerDeviceDriverSelection.NotNewer
+                         or PerDeviceDriverSelection.Outranked)) undecided++;
+                if (DecisionLine(device, decision) is { } line) output.WriteLine(line);
             }
-            var decision = select(device, _ => true, cancellation);
-            if (decision.Candidate is not null) install++;
-            else if (decision.Store is not null) fromStore++;
-            // Outranked is a decision to keep the installed driver, not a
-            // failure to decide, so it must not count as undecided or set the
-            // exit code.
-            else if (decision.Reason is not (PerDeviceDriverSelection.NoCandidate or PerDeviceDriverSelection.NotNewer
-                     or PerDeviceDriverSelection.Outranked)) undecided++;
-            if (DecisionLine(device, decision) is { } line) output.WriteLine(line);
+            output.WriteLine($"{devices} present devices: {install} would get a WIM driver, {(fromStore > 0 ? $"{fromStore} a better driver already in this PC's store, " : "")}" +
+                $"{extend} extension(s) Windows would apply, {undecided} decision(s) could not be made. Nothing was installed.");
+            return undecided == 0 ? 0 : 1;
         }
-        output.WriteLine($"{devices} present devices: {install} would get a WIM driver, {(fromStore > 0 ? $"{fromStore} a better driver already in this PC's store, " : "")}" +
-            $"{extend} extension(s) Windows would apply, {undecided} decision(s) could not be made. Nothing was installed.");
-        return undecided == 0 ? 0 : 1;
+        finally { setNonInteractive(previous); }
     }
 
     // One device's preview: INSTALL (the WIM's driver, or this PC's store driver that beats
@@ -308,9 +327,11 @@ internal static class FilteredDriverInstall
             {
                 var index = collectedIndex ?? throw new InvalidDataException("The pre-mount INF index is unavailable.");
                 ranks = WindowsRankSource.For(index);
-                api = new(DriverDetection.CaptureInstalledDevices, Selector(index, cancellation, ranks),
+                var selector = Selector(index, cancellation, ranks);
+                api = new(DriverDetection.CaptureInstalledDevices, selector.Select,
                     DriverDetection.InstallSelectedDevice, CM_WaitNoPendingInstallEvents, SetupSetNonInteractiveMode,
-                    ExtensionSelector(index, cancellation, ranks), DriverDetection.InstallExtension, InstallFromStore: DriverDetection.InstallFromStore);
+                    ExtensionSelector(index, cancellation, ranks), DriverDetection.InstallExtension,
+                    InstallFromStore: DriverDetection.InstallFromStore, HasDriver: selector.HasDriver);
                 foreach (var item in index.UnresolvedFiles)
                     Console.WriteLine($"Unparsed INF {SafeText.Path(item.ImagePath)}: {item.Reason} It blocks {(item.Ids is null ? "every device" : $"devices with any of its {item.Ids.Count} IDs")}.");
                 foreach (var item in index.ScopedUnresolved)
@@ -442,8 +463,11 @@ internal static class FilteredDriverInstall
                         if (decision.Reason == PerDeviceDriverSelection.NoCandidate && !wasRefused)
                         {
                             // Banned after Windows refused it for another device: the WIM does
-                            // have a driver for this one.
-                            if (refusedPackages.Count != 0 && api.Select(device, m => refusedPackages.Contains(m.Path), cancellation).Reason != PerDeviceDriverSelection.NoCandidate)
+                            // have a driver for this one. A match is all that is asked, not a
+                            // selection: that would also ask the store, for nothing (~50 ms).
+                            bool Refused(InfIndex.ModelEntry m) => refusedPackages.Contains(m.Path);
+                            if (refusedPackages.Count != 0 && (api.HasDriver is { } hasDriver ? hasDriver(device, Refused, cancellation)
+                                : api.Select(device, Refused, cancellation).Reason != PerDeviceDriverSelection.NoCandidate))
                                 reasons[device.InstanceId] = "Windows refused this WIM's driver for another device, so it was not tried here.";
                             else noDriver.Add(device.InstanceId);
                         }

@@ -134,7 +134,9 @@ internal static class PerDeviceDriverSelection
         // better than the bound one. Windows would keep that package, so the WIM's is not
         // installed. On the bound node that is a keep, as pnputil /add-driver /install leaves
         // the device; on another node of the package Windows is asked to install, as a re-scan
-        // would bind that node.
+        // would bind that node. The bound node is kept on an exact tie with the WIM's best too
+        // (same rank, date and version): Windows installs only a better match than the driver
+        // in place, so a tie leaves the installed one, as Final keeps it when the WIM offers it.
         Decision AgainstStore(Decision decision)
         {
             if (windows.Store is null) return decision;
@@ -147,11 +149,11 @@ internal static class PerDeviceDriverSelection
             var version = chosen.Model.DriverVersion!;
             bool storeBetter = store.Rank < rank || store.Rank == rank &&
                 (store.Date > version.Date!.Value || store.Date == version.Date.Value && store.Version > version.Version!.Value);
-            if (!storeBetter) return decision;
+            bool tie = store.Rank == rank && store.Date == version.Date!.Value && store.Version == version.Version!.Value;
             bool installedPackage = !device.Unbound && string.Equals(Path.GetFileName(store.Inf), device.Inf, StringComparison.OrdinalIgnoreCase) &&
                 store.Date == installedDate && store.Version == installedVersion;
-            if (installedPackage && SameSection(device.Section, store.Section)) return new(null, store.Rank < rank ? Outranked : NotNewer);
-            return new(null, StoreBetter, Store: store);
+            if (installedPackage && (storeBetter || tie) && SameSection(device.Section, store.Section)) return new(null, store.Rank < rank ? Outranked : NotNewer);
+            return storeBetter ? new(null, StoreBetter, Store: store) : decision;
         }
     }
 
