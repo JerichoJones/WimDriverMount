@@ -77,7 +77,9 @@ internal sealed class WindowsRankSource : IDisposable
     // 80 and up unsigned. Measured the same, both states.
     private uint SignerFloor => allSigningEqual ? 0u : 0x0D000000u;
 
-    internal PerDeviceDriverSelection.WindowsRanks Ranks => new(Installed, Candidate, InstalledAsEstimated, SignerFloor);
+    // Store: asked only for a device the WIM would otherwise get a driver on (~50 ms each).
+    internal PerDeviceDriverSelection.WindowsRanks Ranks => new(Installed, Candidate, InstalledAsEstimated, SignerFloor,
+        device => DriverDetection.StoreBest(device.InstanceId));
 
     // Every signed package scores the same (the policy is on or not configured).
     internal bool SignersEqual => allSigningEqual;

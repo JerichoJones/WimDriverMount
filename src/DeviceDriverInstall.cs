@@ -22,6 +22,52 @@ internal static partial class DriverDetection
     private static extern bool DiInstallDriverW(IntPtr parent, string infPath, uint flags,
         [MarshalAs(UnmanagedType.Bool)] out bool reboot);
 
+    // The same call without a driver: Windows searches the driver store for the best match itself.
+    [DllImport("newdev.dll", EntryPoint = "DiInstallDevice", ExactSpelling = true, SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DiInstallDeviceBest(IntPtr parent, IntPtr set, ref DeviceInfo device,
+        IntPtr noDriver, uint flags, [MarshalAs(UnmanagedType.Bool)] out bool reboot);
+
+    // Lets Windows install the best driver already in this PC's driver store on the device
+    // (DiInstallDevice without a driver: "searches the drivers preinstalled in the driver store
+    // for the driver that is the best match"). Used where that driver beats the WIM's best, so
+    // the end state is the one pnputil /add-driver /install or a re-scan gives. Nothing is
+    // staged: the WIM's package is not the one Windows would use.
+    internal static SelectedInstallResult InstallFromStore(string instanceId)
+    {
+        bool attempted = false, installed = false, restart = false, inFlight = false;
+        int error = 0;
+        Exception? failure = null;
+        IntPtr set = new(-1);
+        var device = new DeviceInfo { Size = (uint)Marshal.SizeOf<DeviceInfo>() };
+        try
+        {
+            if (string.IsNullOrWhiteSpace(instanceId) || instanceId.Contains('\0') || instanceId.Length >= 1024)
+                throw new InvalidDataException("Device instance ID is invalid.");
+            set = SetupDiCreateDeviceInfoList(IntPtr.Zero, IntPtr.Zero);
+            if (set == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot create device set.");
+            if (!SetupDiOpenDeviceInfoW(set, instanceId, IntPtr.Zero, 0, ref device))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot open selected device.");
+            attempted = true;
+            inFlight = true;
+            installed = DiInstallDeviceBest(IntPtr.Zero, set, ref device, IntPtr.Zero, 0, out restart);
+            inFlight = false;
+            if (!installed) throw new Win32Exception(Marshal.GetLastWin32Error(), "Installation from the driver store failed.");
+        }
+        catch (Exception ex) { failure = ex; error = ex is Win32Exception win ? win.NativeErrorCode : 0; }
+        finally
+        {
+            if (set != new IntPtr(-1) && !SetupDiDestroyDeviceInfoList(set))
+            {
+                var ex = new Win32Exception(Marshal.GetLastWin32Error(), "Cannot destroy selected device set.");
+                failure = failure is null ? ex : new AggregateException(failure, ex);
+                if (error == 0) error = ex.NativeErrorCode;
+            }
+        }
+        return new(false, null, attempted, installed, error, restart, failure?.Message, inFlight, false);
+    }
+
     // NothingToChange is Windows' own "already as good as it gets": the package was
     // staged but is not a better match for any device. Neither installed nor failed.
     internal sealed record ExtensionInstallResult(bool Installed, int Error, bool Restart, string? ErrorDetail, bool NothingToChange = false)

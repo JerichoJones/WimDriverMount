@@ -28,7 +28,15 @@ internal static class FilteredDriverInstall
         Func<InfIndex.ModelEntry, DriverDetection.ExtensionInstallResult>? InstallExtension = null,
         // Windows' ranking, which Run disposes however it ends (its staging
         // folder goes with it). Made from the index when Run builds its own.
-        WindowsRankSource? Ranks = null);
+        WindowsRankSource? Ranks = null,
+        // Lets Windows install its own best driver from the driver store on a device
+        // (Decision.Store): nothing from the WIM is staged for it.
+        Func<string, DriverDetection.SelectedInstallResult>? InstallFromStore = null);
+
+    // A store driver in the shape the journal and the final check already use for a WIM
+    // driver: its published INF stands where the WIM path would.
+    private static InfIndex.ModelEntry StoreModel(DriverDetection.StoreDriver store) =>
+        new(store.Inf, "", store.Section, store.Section, "", Array.Empty<string>(), true, store.Section, null, new(store.Date, store.Version));
 
     // The JSON these write is compared and journaled, so its shape is fixed: the
     // records below list the properties in the order they have always been written.
@@ -142,6 +150,12 @@ internal static class FilteredDriverInstall
                 output.WriteLine($"INSTALL {Label(device)}: {decision.Reason}\n  WIM driver: {InWim(c.Path)} [{SafeText.Quote(c.ActualInstallSection)}] " +
                     $"{c.DriverVersion?.Date:yyyy-MM-dd} {Version(c.DriverVersion?.Version)}\n  Installed:  {(device.Unbound ? "none" : $"{SafeText.Path(device.Inf)} {SafeText.Path(device.Date)} {SafeText.Path(device.Version)}")}");
             }
+            else if (decision.Store is { } s)
+            {
+                install++;
+                output.WriteLine($"INSTALL {Label(device)}: {decision.Reason}\n  Store driver: {SafeText.Path(s.Inf)} [{SafeText.Quote(s.Section)}] " +
+                    $"{s.Date:yyyy-MM-dd} {Version(s.Version)}\n  Installed:  {(device.Unbound ? "none" : $"{SafeText.Path(device.Inf)} {SafeText.Path(device.Date)} {SafeText.Path(device.Version)}")}");
+            }
             // Outranked is a decision to keep the installed driver, not a
             // failure to decide, so it must not count as undecided or set the
             // exit code.
@@ -246,7 +260,9 @@ internal static class FilteredDriverInstall
         // the operator asked for an install that Windows would not do, so the run fails.
         var refusedDevices = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         bool Allowed(InfIndex.ModelEntry model) => !refusedPackages.Contains(model.Path);
-        var expected = new List<(string Instance, string? Published, InfIndex.ModelEntry Model)>();
+        // FromStore: Windows chose the driver; its section as Windows reports it may carry
+        // a decoration the final check cannot predict, so that check compares INF, date and version.
+        var expected = new List<(string Instance, string? Published, InfIndex.ModelEntry Model, bool FromStore)>();
         IReadOnlyList<DriverDetection.InstalledDevice>? after = null;
         Dependencies? api = dependencies;
         WindowsRankSource? ranks = dependencies?.Ranks;
@@ -264,7 +280,7 @@ internal static class FilteredDriverInstall
                 ranks = WindowsRankSource.For(index);
                 api = new(DriverDetection.CaptureInstalledDevices, Selector(index, cancellation, ranks),
                     DriverDetection.InstallSelectedDevice, CM_WaitNoPendingInstallEvents, SetupSetNonInteractiveMode,
-                    ExtensionSelector(index, cancellation, ranks), DriverDetection.InstallExtension);
+                    ExtensionSelector(index, cancellation, ranks), DriverDetection.InstallExtension, InstallFromStore: DriverDetection.InstallFromStore);
                 foreach (var item in index.UnresolvedFiles)
                     Console.WriteLine($"Unparsed INF {SafeText.Path(item.ImagePath)}: {item.Reason} It blocks {(item.Ids is null ? "every device" : $"devices with any of its {item.Ids.Count} IDs")}.");
                 foreach (var item in index.ScopedUnresolved)
@@ -330,6 +346,55 @@ internal static class FilteredDriverInstall
                     // nor up to date, whatever is left to choose from.
                     bool wasRefused = refusedDevices.Contains(device.InstanceId);
                     if (wasRefused && decision.Candidate is null) reasons[device.InstanceId] = "Windows refused the selected package.";
+                    if (decision.Store is { } store)
+                    {
+                        // A driver already in this PC's store beats the WIM's: Windows installs
+                        // its own choice, as it would on a re-scan. One hand-off per device and store driver.
+                        if (api.InstallFromStore is null)
+                        {
+                            report.Add(("Undecided", Who(device.InstanceId), decision.Reason + " This run cannot ask Windows to install it."));
+                            incomplete = true;
+                            continue;
+                        }
+                        string storeAttempt = device.InstanceId.ToUpperInvariant() + "\nstore:" + store.Inf.ToUpperInvariant();
+                        if (!attempted.Add(storeAttempt))
+                        {
+                            report.Add(("Skipped", Who(device.InstanceId), "Windows was already asked to install its store driver for it; not repeated"));
+                            incomplete = true;
+                            continue;
+                        }
+                        int storeSequence = started + 1;
+                        try { journal.WriteSelectedIntent(storeSequence, SelectedIntent(device, StoreModel(store))); }
+                        catch { uncertain = true; throw; }
+                        started = storeSequence;
+                        inFlight = true;
+                        after = null;
+                        var storeOutcome = api.InstallFromStore(device.InstanceId);
+                        inFlight = false;
+                        called = true;
+                        returned++;
+                        uncertain |= storeOutcome.InstallationOutcomeUnknown;
+                        restart |= storeOutcome.Restart;
+                        if (storeOutcome.InstallationOutcomeUnknown)
+                            throw new IOException("The installation call did not return a known outcome; its intent remains open.");
+                        try { journal.WriteSelectedCompletion(storeSequence, Outcome(storeOutcome), storeOutcome.JournalOutcome); } catch { uncertain = true; throw; }
+                        string storeDriver = $"{SafeText.Path(Path.GetFileName(store.Inf))} {store.Date:yyyy-MM-dd} {Version(store.Version)}";
+                        if (storeOutcome.Installed)
+                        {
+                            succeeded++;
+                            expected.Add((device.InstanceId, store.Inf, StoreModel(store), true));
+                            report.Add(("Installed", Who(device.InstanceId), $"from this PC's driver store, {storeDriver}: a better match than the WIM's" + (storeOutcome.Restart ? "; restart required" : "")));
+                        }
+                        else
+                        {
+                            failedDevices.Add(device.InstanceId);
+                            incomplete = true;
+                            failedCalls++;
+                            report.Add(("FAILED", Who(device.InstanceId), $"store driver {storeDriver}: {Why(storeOutcome.ErrorDetail, storeOutcome.Error)}"));
+                        }
+                        Check();
+                        continue;
+                    }
                     if (decision.Candidate is null)
                     {
                         bool keeps = decision.Reason is PerDeviceDriverSelection.NotNewer or PerDeviceDriverSelection.Outranked;
@@ -400,7 +465,7 @@ internal static class FilteredDriverInstall
                     else if (refused) { refusedPackages.Add(decision.Candidate.Path); refusedDevices.Add(device.InstanceId); processed.Remove(DeviceState(device)); }
                     else { failedDevices.Add(device.InstanceId); incomplete = true; }
                     if (outcome.ErrorDetail is not null && !refused) incomplete = true;
-                    if (outcome.Installed) expected.Add((device.InstanceId, outcome.PublishedInf, decision.Candidate));
+                    if (outcome.Installed) expected.Add((device.InstanceId, outcome.PublishedInf, decision.Candidate, false));
                     if (outcome.Installed)
                         report.Add(("Installed", Who(device.InstanceId), Driver(decision.Candidate) + (outcome.Restart ? "; restart required" : "")));
                     else if (refused)
@@ -532,8 +597,8 @@ internal static class FilteredDriverInstall
                 bool versionKnown = PerDeviceDriverSelection.TryVersion(final?.Version, out ulong parsedVersion);
                 bool verified = final is not null && final.CaptureError is null && !string.IsNullOrWhiteSpace(item.Published) &&
                     string.Equals(final.Inf, Path.GetFileName(item.Published), StringComparison.OrdinalIgnoreCase) &&
-                    !string.IsNullOrWhiteSpace(final.Section) && !string.IsNullOrWhiteSpace(item.Model.ActualInstallSection) &&
-                    string.Equals(final.Section, item.Model.ActualInstallSection, StringComparison.OrdinalIgnoreCase) &&
+                    (item.FromStore || !string.IsNullOrWhiteSpace(final.Section) && !string.IsNullOrWhiteSpace(item.Model.ActualInstallSection) &&
+                    string.Equals(final.Section, item.Model.ActualInstallSection, StringComparison.OrdinalIgnoreCase)) &&
                     ver?.Date is not null && final.Date == ver.Date.Value.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) &&
                     versionKnown && ver.Version == parsedVersion;
                 if (!verified)

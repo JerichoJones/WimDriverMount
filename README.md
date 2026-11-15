@@ -100,6 +100,7 @@ How the tool checks:
 - Extensions: Windows ranks them with the signer too, but it cannot be asked to rank one. With the policy on, every signed extension scores the same, so the choice is exact. With it off, if extensions from different INFs compete for the same kind of extension, that extension is left undecided rather than guessed.
 - The installed driver itself, offered again by the WIM (the same INF file, byte for byte), is never an upgrade: Windows keeps it, even when the WIM's copy matches the device more specifically. Observed on real devices; if it ties with another driver, the installed one is kept.
 - Identical copies of one extension (same INF and catalog) in several folders count as one. A different or catalog-less copy still makes the choice undecided.
+- Windows installs from its whole driver store, not from one offered package. So where the WIM's best driver would be installed, Windows is first asked what it would take from the store already on the PC; if that beats the WIM's, the WIM's is not installed and Windows installs its own choice, exactly as `pnputil /add-driver /install` or a device re-scan ends up. Asked only for those devices; about 50 ms each.
 - Windows checks every signature and does the installation itself.
 
 When Windows won't use a package:

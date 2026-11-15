@@ -18,8 +18,82 @@ internal static partial class DriverDetection
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetupDiGetDriverInstallParamsW(IntPtr set, ref DeviceInfo device, ref DriverInfo driver, ref DriverInstallParams parameters);
 
+    [DllImport("setupapi.dll", ExactSpelling = true, SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetupDiCallClassInstaller(uint function, IntPtr set, ref DeviceInfo device);
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetupDiGetSelectedDriverW(IntPtr set, ref DeviceInfo device, ref DriverInfo driver);
+    private const uint DifSelectBestCompatDrv = 0x17, AppendDriverList = 0x00040000;
+    private const int NoCompatDrivers = unchecked((int)0xE0000228), NoDriverSelected = unchecked((int)0xE0000212);
+
     // The bound driver's rank. Null when Windows lists no installed driver node.
     internal static uint? InstalledDriverRank(string instanceId) => BestRank(instanceId, null, null);
+
+    // The driver Windows would install on this device from the packages already in this
+    // PC's driver store: its published INF, install section, rank, date and version.
+    internal sealed record StoreDriver(string Inf, string Section, uint Rank, DateOnly Date, ulong Version);
+
+    // What a device re-scan, or pnputil /add-driver /install, ends with: Windows' own
+    // choice over every published INF (%SystemRoot%\inf, the driver store) plus the
+    // installed driver. The WIM is not in that list; the caller compares. Null when
+    // Windows selects nothing there; a failure to ask throws. Measured: ~50 ms a device.
+    // (Jericho, 2026-11-15: the tool does what Windows does when the store already holds
+    // a better driver than the WIM's, instead of installing the WIM's as DiInstallDriver would.)
+    internal static StoreDriver? StoreBest(string instanceId)
+    {
+        IntPtr set = SetupDiCreateDeviceInfoList(IntPtr.Zero, IntPtr.Zero);
+        if (set == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot create device set.");
+        var device = new DeviceInfo { Size = (uint)Marshal.SizeOf<DeviceInfo>() };
+        bool listBuilt = false;
+        try
+        {
+            if (!SetupDiOpenDeviceInfoW(set, instanceId, IntPtr.Zero, 0, ref device))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot open device.");
+            var parameters = new InstallParams { Size = (uint)Marshal.SizeOf<InstallParams>(), DriverPath = string.Empty };
+            if (!SetupDiGetDeviceInstallParamsW(set, ref device, ref parameters))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot read device installation parameters.");
+            parameters.Flags &= ~0x00010000u; // not DI_ENUMSINGLEINF: the default INF location is the store
+            parameters.FlagsEx &= ~(RecursiveSearch | InstalledDriverOnly | UseClassForCompat | AppendDriverList);
+            parameters.FlagsEx |= AllowExcludedDrivers;
+            if (!SetupDiSetDeviceInstallParamsW(set, ref device, ref parameters) ||
+                !SetupDiBuildDriverInfoList(set, ref device, CompatibleDriver))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot build the driver store's list for the device.");
+            listBuilt = true;
+            // The installed driver joins the same list, as it does when Windows re-scans.
+            if (SetupDiGetDeviceInstallParamsW(set, ref device, ref parameters))
+            {
+                parameters.FlagsEx |= AppendDriverList | InstalledDriverOnly;
+                if (SetupDiSetDeviceInstallParamsW(set, ref device, ref parameters)) SetupDiBuildDriverInfoList(set, ref device, CompatibleDriver);
+            }
+            if (!SetupDiCallClassInstaller(DifSelectBestCompatDrv, set, ref device))
+            {
+                int error = Marshal.GetLastWin32Error();
+                if (error == NoCompatDrivers || error == NoMoreItems) return null;
+                throw new Win32Exception(error, "Windows could not select a driver from the store.");
+            }
+            var selected = new DriverInfo { Size = (uint)Marshal.SizeOf<DriverInfo>() };
+            if (!SetupDiGetSelectedDriverW(set, ref device, ref selected))
+            {
+                int error = Marshal.GetLastWin32Error();
+                if (error == NoMoreItems || error == NoDriverSelected) return null;
+                throw new Win32Exception(error, "Cannot read the driver Windows selected.");
+            }
+            var detail = GetIndexedDetail(set, ref device, ref selected);
+            var install = new DriverInstallParams { Size = (uint)Marshal.SizeOf<DriverInstallParams>() };
+            if (!SetupDiGetDriverInstallParamsW(set, ref device, ref selected, ref install))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot read the selected driver's rank.");
+            if (detail.DriverDate <= 0) throw new InvalidDataException("The selected driver has no date.");
+            return new(detail.Inf, detail.Section, install.Rank, DateOnly.FromDateTime(DateTime.FromFileTimeUtc(detail.DriverDate)), detail.DriverVersion);
+        }
+        finally
+        {
+            if (listBuilt) SetupDiDestroyDriverInfoList(set, ref device, CompatibleDriver);
+            SetupDiDestroyDeviceInfoList(set);
+        }
+    }
 
     // The catalog an INF names for this platform ([Version] CatalogFile, with its
     // decorations), as Windows reads it; empty when it names none.

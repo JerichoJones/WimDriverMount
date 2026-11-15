@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Globalization;
 
 // Picks one driver per device the way Windows does: by rank (signer, feature
@@ -6,9 +7,13 @@ using System.Globalization;
 // real hardware.
 internal static class PerDeviceDriverSelection
 {
-    internal sealed record Decision(InfIndex.ModelEntry? Candidate, string Reason, IReadOnlyList<InfIndex.ModelEntry>? Winners = null);
+    // Store: no WIM candidate, because a driver already in this PC's driver store beats the
+    // WIM's best; Windows installs that one (what a re-scan or pnputil /add-driver /install does).
+    internal sealed record Decision(InfIndex.ModelEntry? Candidate, string Reason, IReadOnlyList<InfIndex.ModelEntry>? Winners = null,
+        DriverDetection.StoreDriver? Store = null);
     internal const string NoCandidate = "The WIM has no driver for this device.", NotNewer = "The installed driver is as new or newer.",
-        Outranked = "The installed driver is a better match.";
+        Outranked = "The installed driver is a better match.",
+        StoreBetter = "A driver already in this PC's driver store is a better match than the WIM's; Windows installs that one.";
 
     // Windows' own full ranks, signer score included (DriverRanking.cs); null
     // when Windows could not rank that driver. Candidate also gets the model's
@@ -16,9 +21,12 @@ internal static class PerDeviceDriverSelection
     // driver in the current policy state, so no rank is below estimate + floor.
     // InstalledAsEstimated: the bound driver's rank is known to equal its
     // estimate + floor without asking (WindowsRankSource says when).
+    // Store: the driver Windows would install from this PC's driver store alone (null: none);
+    // asked only for a device the WIM would otherwise get a driver on. May throw.
     internal sealed record WindowsRanks(Func<DriverDetection.InstalledDevice, uint?> Installed,
         Func<DriverDetection.InstalledDevice, InfIndex.ModelEntry, uint, uint?> Candidate,
-        Func<DriverDetection.InstalledDevice, bool> InstalledAsEstimated, uint SignerFloor = 0);
+        Func<DriverDetection.InstalledDevice, bool> InstalledAsEstimated, uint SignerFloor = 0,
+        Func<DriverDetection.InstalledDevice, DriverDetection.StoreDriver?>? Store = null);
 
     internal static Decision Select(DriverDetection.InstalledDevice device,
         IReadOnlyList<InMemoryDriverMatcher.Match> matches, bool indexComplete, WindowsRanks? windows = null,
@@ -101,7 +109,11 @@ internal static class PerDeviceDriverSelection
             {
                 uint best = candidates.Min(RankOf);
                 var unasked = candidates.Where(match => RankOf(match) == best && !known.ContainsKey(match)).ToArray();
-                if (unasked.Length == 0) return Final(decision);
+                if (unasked.Length == 0)
+                {
+                    var final = Final(decision);
+                    return final.Candidate is null ? final : AgainstStore(final);
+                }
                 foreach (var match in unasked)
                     if (!AskCandidate(match)) return new(null, CannotRankCandidate);
             }
@@ -110,6 +122,27 @@ internal static class PerDeviceDriverSelection
                 if (!AskInstalled()) return new(null, CannotRankInstalled);
             }
             else return decision;
+        }
+
+        // Windows installs from the whole driver store, not from one offered package: when a
+        // driver already there beats the WIM's best (lower rank; at equal rank newer date, then
+        // higher version, Windows' order), the WIM's is not installed and Windows' own choice is.
+        // The installed driver is in that list too; it was compared above, so it is not a store win.
+        Decision AgainstStore(Decision decision)
+        {
+            if (windows.Store is null) return decision;
+            DriverDetection.StoreDriver? store;
+            try { store = windows.Store(device); }
+            catch (Exception error) when (error is Win32Exception or InvalidDataException) { return new(null, CannotRankStore); }
+            if (store is null) return decision;
+            if (!device.Unbound && string.Equals(Path.GetFileName(store.Inf), device.Inf, StringComparison.OrdinalIgnoreCase) &&
+                store.Date == installedDate && store.Version == installedVersion) return decision;
+            var chosen = candidates.First(match => ReferenceEquals(match.Model, decision.Candidate) || match.Model == decision.Candidate);
+            uint rank = RankOf(chosen);
+            var version = chosen.Model.DriverVersion!;
+            bool storeBetter = store.Rank < rank || store.Rank == rank &&
+                (store.Date > version.Date!.Value || store.Date == version.Date.Value && store.Version > version.Version!.Value);
+            return storeBetter ? new(null, StoreBetter, Store: store) : decision;
         }
     }
 
@@ -123,7 +156,8 @@ internal static class PerDeviceDriverSelection
         (sameInf is null || sameInf(model, device));
 
     private const string CannotRankInstalled = "Windows could not rank the installed driver, so nothing was chosen.",
-        CannotRankCandidate = "Windows could not rank a matching WIM driver, so nothing was chosen.";
+        CannotRankCandidate = "Windows could not rank a matching WIM driver, so nothing was chosen.",
+        CannotRankStore = "Windows could not say which driver it would take from this PC's driver store, so nothing was chosen.";
 
     private static Decision Decide(DriverDetection.InstalledDevice device, IReadOnlyList<InMemoryDriverMatcher.Match> candidates,
         Func<InMemoryDriverMatcher.Match, uint> rankOf, uint? installedRank, DateOnly installedDate, ulong installedVersion, bool signed)
