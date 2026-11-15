@@ -107,12 +107,31 @@ internal static class FilteredDriverInstall
     private static string Driver(InfIndex.ModelEntry model) =>
         $"{SafeText.Path(Path.GetFileName(model.Path))} {Version(model.DriverVersion?.Version)}";
 
+    // A store driver by the name its package gave it, which is how a person knows it (and how
+    // the device table names drivers), with the oemN.inf name Windows published it under, which
+    // is what Device Manager and the "Installed:" line show. One name when they are the same.
+    private static string StoreName(DriverDetection.StoreDriver store)
+    {
+        string published = Path.GetFileName(store.Inf);
+        return string.Equals(store.OriginalInf, published, StringComparison.OrdinalIgnoreCase)
+            ? SafeText.Path(published) : $"{SafeText.Path(store.OriginalInf)} (published as {SafeText.Path(published)})";
+    }
+
     // A preview mounts nothing, so a WIM path is shown from the WIM's root, not on a drive letter.
     private static string InWim(string path) =>
         path.Length > 3 && path[1] == ':' && path[2] == '\\' ? SafeText.Path(path[2..]) + " (in the WIM)" : SafeText.Path(path);
 
-    // The same capture and selection as Run, without staging or installing.
+    // The same capture and selection as Run, without staging or installing. Asking the store
+    // (StoreBest) goes through the device class's installer, as an installation does, so Windows
+    // is told not to show dialogs here either: a preview has no one to answer them.
     internal static int Preview(InfCollectedIndex index, TextWriter output, CancellationToken cancellation)
+    {
+        bool previous = SetupSetNonInteractiveMode(true);
+        try { return PreviewDevices(index, output, cancellation); }
+        finally { SetupSetNonInteractiveMode(previous); }
+    }
+
+    private static int PreviewDevices(InfCollectedIndex index, TextWriter output, CancellationToken cancellation)
     {
         foreach (var item in index.UnresolvedFiles)
             output.WriteLine($"Unparsed INF {SafeText.Path(item.ImagePath)}: {item.Reason} It blocks {(item.Ids is null ? "every device" : $"devices with any of its {item.Ids.Count} IDs")}.");
@@ -167,7 +186,7 @@ internal static class FilteredDriverInstall
             return $"INSTALL {Label(device)}: {decision.Reason}\n  WIM driver: {InWim(c.Path)} [{SafeText.Quote(c.ActualInstallSection)}] " +
                 $"{c.DriverVersion?.Date:yyyy-MM-dd} {Version(c.DriverVersion?.Version)}\n  Installed:  {installed}";
         if (decision.Store is { } s)
-            return $"INSTALL {Label(device)}: {decision.Reason}\n  Store driver: {SafeText.Path(s.Inf)} [{SafeText.Quote(s.Section)}] " +
+            return $"INSTALL {Label(device)}: {decision.Reason}\n  Store driver: {StoreName(s)} [{SafeText.Quote(s.Section)}] " +
                 $"{s.Date:yyyy-MM-dd} {Version(s.Version)}\n  Installed:  {installed}";
         if (decision.Reason is PerDeviceDriverSelection.NotNewer or PerDeviceDriverSelection.Outranked)
             return $"KEEP    {Label(device)}: {decision.Reason} ({installed})";
@@ -331,7 +350,10 @@ internal static class FilteredDriverInstall
                     if (decision.Candidate is not null || decision.Store is not null)
                     {
                         // Capture immediately before any hand-off, the WIM's driver or the
-                        // store's; reselect if relevant state changed.
+                        // store's; a device whose state changed since it was chosen for is chosen
+                        // for again on the fresh state. An unchanged device is not: the choice
+                        // depends on the device, the WIM and the driver store, and this program
+                        // has touched none of them since (the store question alone is ~50 ms).
                         var current = Capture().Where(x => string.Equals(x.InstanceId, device.InstanceId, StringComparison.OrdinalIgnoreCase)).ToArray();
                         if (current.Length != 1)
                         {
@@ -340,8 +362,9 @@ internal static class FilteredDriverInstall
                             incomplete = true;
                             continue;
                         }
+                        bool changed = DeviceState(current[0]) != DeviceState(device);
                         device = current[0];
-                        decision = api.Select(device, Allowed, cancellation);
+                        if (changed) decision = api.Select(device, Allowed, cancellation);
                     }
                     processed.Add(DeviceState(device));
                     // Keep the reason that led to an installation over a later "already current".
@@ -383,7 +406,7 @@ internal static class FilteredDriverInstall
                         if (storeOutcome.InstallationOutcomeUnknown)
                             throw new IOException("The installation call did not return a known outcome; its intent remains open.");
                         try { journal.WriteSelectedCompletion(storeSequence, Outcome(storeOutcome), storeOutcome.JournalOutcome); } catch { uncertain = true; throw; }
-                        string storeDriver = $"{SafeText.Path(Path.GetFileName(store.Inf))} {store.Date:yyyy-MM-dd} {Version(store.Version)}";
+                        string storeDriver = $"{StoreName(store)} {store.Date:yyyy-MM-dd} {Version(store.Version)}";
                         if (storeOutcome.Installed)
                         {
                             // As a WIM install does: a package Windows refused for it is replaced now.
@@ -391,6 +414,9 @@ internal static class FilteredDriverInstall
                             refusedDevices.Remove(device.InstanceId);
                             expected.Add((device.InstanceId, store.Inf, StoreModel(store), true));
                             report.Add(("Installed", Who(device.InstanceId), $"from this PC's driver store, {storeDriver}: a better match than the WIM's" + (storeOutcome.Restart ? "; restart required" : "")));
+                            // Installed, but something after the call failed (its device set could not be
+                            // released): the journal carries the error, so the run does too, as for a WIM install.
+                            if (storeOutcome.ErrorDetail is not null) incomplete = true;
                         }
                         else
                         {

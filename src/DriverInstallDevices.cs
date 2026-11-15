@@ -103,7 +103,13 @@ internal static partial class DriverDetection
     private static string OriginalInfName(string published)
     {
         if (Path.GetFileName(published) != published) throw new InvalidDataException("Invalid published INF name.");
-        string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "INF", published);
+        return OriginalInfOf(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "INF", published));
+    }
+
+    // The name a published INF (oemN.inf) had in its package, as Windows records it; an
+    // inbox INF's own name. Throws when Windows cannot say.
+    private static string OriginalInfOf(string path)
+    {
         if (!SetupGetInfInformationW(path, InfNameIsAbsolute, null, 0, out uint size) || size == 0 || size > 32 * 1024 * 1024)
             throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot query published INF.");
         byte[] information = new byte[(int)size];

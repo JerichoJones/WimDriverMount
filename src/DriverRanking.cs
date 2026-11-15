@@ -33,8 +33,10 @@ internal static partial class DriverDetection
     internal static uint? InstalledDriverRank(string instanceId) => BestRank(instanceId, null, null);
 
     // The driver Windows would install on this device from the packages already in this
-    // PC's driver store: its published INF, install section, rank, date and version.
-    internal sealed record StoreDriver(string Inf, string Section, uint Rank, DateOnly Date, ulong Version);
+    // PC's driver store: its published INF (the oemN.inf path Device Manager shows), the
+    // name its package gave that INF (the same file name for an inbox INF), install
+    // section, rank, date and version.
+    internal sealed record StoreDriver(string Inf, string OriginalInf, string Section, uint Rank, DateOnly Date, ulong Version);
 
     // What a device re-scan, or pnputil /add-driver /install, ends with: Windows' own
     // choice over every published INF (%SystemRoot%\inf, the driver store) plus the
@@ -86,7 +88,13 @@ internal static partial class DriverDetection
             if (!SetupDiGetDriverInstallParamsW(set, ref device, ref selected, ref install))
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot read the selected driver's rank.");
             if (detail.DriverDate <= 0) throw new InvalidDataException("The selected driver has no date.");
-            return new(detail.Inf, detail.Section, install.Rank, DateOnly.FromDateTime(DateTime.FromFileTimeUtc(detail.DriverDate)), detail.DriverVersion);
+            // The package's own name for the INF is how a person knows the driver (the device
+            // table shows it too); it is informational, so the published name stands in when
+            // Windows cannot give it, as CaptureInstalledDevices does for the installed driver.
+            string original;
+            try { original = OriginalInfOf(detail.Inf); }
+            catch (Exception error) when (error is Win32Exception or InvalidDataException) { original = Path.GetFileName(detail.Inf); }
+            return new(detail.Inf, original, detail.Section, install.Rank, DateOnly.FromDateTime(DateTime.FromFileTimeUtc(detail.DriverDate)), detail.DriverVersion);
         }
         finally
         {
