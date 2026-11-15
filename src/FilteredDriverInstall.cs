@@ -123,7 +123,7 @@ internal static class FilteredDriverInstall
         using var ranks = WindowsRankSource.For(index);
         var select = Selector(index, cancellation, ranks);
         var selectExtensions = ExtensionSelector(index, cancellation, ranks);
-        int devices = 0, install = 0, undecided = 0, extend = 0;
+        int devices = 0, install = 0, fromStore = 0, undecided = 0, extend = 0;
         foreach (var device in DriverDetection.CaptureInstalledDevices(cancellation))
         {
             devices++;
@@ -144,32 +144,34 @@ internal static class FilteredDriverInstall
                 }
             }
             var decision = select(device, _ => true, cancellation);
-            if (decision.Candidate is { } c)
-            {
-                install++;
-                output.WriteLine($"INSTALL {Label(device)}: {decision.Reason}\n  WIM driver: {InWim(c.Path)} [{SafeText.Quote(c.ActualInstallSection)}] " +
-                    $"{c.DriverVersion?.Date:yyyy-MM-dd} {Version(c.DriverVersion?.Version)}\n  Installed:  {(device.Unbound ? "none" : $"{SafeText.Path(device.Inf)} {SafeText.Path(device.Date)} {SafeText.Path(device.Version)}")}");
-            }
-            else if (decision.Store is { } s)
-            {
-                install++;
-                output.WriteLine($"INSTALL {Label(device)}: {decision.Reason}\n  Store driver: {SafeText.Path(s.Inf)} [{SafeText.Quote(s.Section)}] " +
-                    $"{s.Date:yyyy-MM-dd} {Version(s.Version)}\n  Installed:  {(device.Unbound ? "none" : $"{SafeText.Path(device.Inf)} {SafeText.Path(device.Date)} {SafeText.Path(device.Version)}")}");
-            }
+            if (decision.Candidate is not null) install++;
+            else if (decision.Store is not null) fromStore++;
             // Outranked is a decision to keep the installed driver, not a
             // failure to decide, so it must not count as undecided or set the
             // exit code.
-            else if (decision.Reason is PerDeviceDriverSelection.NotNewer
-                     or PerDeviceDriverSelection.Outranked)
-                output.WriteLine($"KEEP    {Label(device)}: {decision.Reason} ({SafeText.Path(device.Inf)} {SafeText.Path(device.Date)} {SafeText.Path(device.Version)})");
-            else if (decision.Reason != PerDeviceDriverSelection.NoCandidate)
-            {
-                undecided++;
-                output.WriteLine($"SKIP    {Label(device)}: {decision.Reason}");
-            }
+            else if (decision.Reason is not (PerDeviceDriverSelection.NoCandidate or PerDeviceDriverSelection.NotNewer
+                     or PerDeviceDriverSelection.Outranked)) undecided++;
+            if (DecisionLine(device, decision) is { } line) output.WriteLine(line);
         }
-        output.WriteLine($"{devices} present devices: {install} would get a WIM driver, {extend} extension(s) Windows would apply, {undecided} decision(s) could not be made. Nothing was installed.");
+        output.WriteLine($"{devices} present devices: {install} would get a WIM driver, {(fromStore > 0 ? $"{fromStore} a better driver already in this PC's store, " : "")}" +
+            $"{extend} extension(s) Windows would apply, {undecided} decision(s) could not be made. Nothing was installed.");
         return undecided == 0 ? 0 : 1;
+    }
+
+    // One device's preview: INSTALL (the WIM's driver, or this PC's store driver that beats
+    // it), KEEP or SKIP; nothing for a device the WIM has no driver for.
+    internal static string? DecisionLine(DriverDetection.InstalledDevice device, PerDeviceDriverSelection.Decision decision)
+    {
+        string installed = device.Unbound ? "none" : $"{SafeText.Path(device.Inf)} {SafeText.Path(device.Date)} {SafeText.Path(device.Version)}";
+        if (decision.Candidate is { } c)
+            return $"INSTALL {Label(device)}: {decision.Reason}\n  WIM driver: {InWim(c.Path)} [{SafeText.Quote(c.ActualInstallSection)}] " +
+                $"{c.DriverVersion?.Date:yyyy-MM-dd} {Version(c.DriverVersion?.Version)}\n  Installed:  {installed}";
+        if (decision.Store is { } s)
+            return $"INSTALL {Label(device)}: {decision.Reason}\n  Store driver: {SafeText.Path(s.Inf)} [{SafeText.Quote(s.Section)}] " +
+                $"{s.Date:yyyy-MM-dd} {Version(s.Version)}\n  Installed:  {installed}";
+        if (decision.Reason is PerDeviceDriverSelection.NotNewer or PerDeviceDriverSelection.Outranked)
+            return $"KEEP    {Label(device)}: {decision.Reason} ({installed})";
+        return decision.Reason == PerDeviceDriverSelection.NoCandidate ? null : $"SKIP    {Label(device)}: {decision.Reason}";
     }
 
     // Every device, before and after, and why: changed devices first, then by name.
@@ -260,8 +262,9 @@ internal static class FilteredDriverInstall
         // the operator asked for an install that Windows would not do, so the run fails.
         var refusedDevices = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         bool Allowed(InfIndex.ModelEntry model) => !refusedPackages.Contains(model.Path);
-        // FromStore: Windows chose the driver; its section as Windows reports it may carry
-        // a decoration the final check cannot predict, so that check compares INF, date and version.
+        // FromStore: Windows chose the driver. Windows reports a store driver's base DDInstall
+        // section, while a device reports the decorated one it installed (InfSection +
+        // InfSectionExt), so the final check compares its INF, date and version only.
         var expected = new List<(string Instance, string? Published, InfIndex.ModelEntry Model, bool FromStore)>();
         IReadOnlyList<DriverDetection.InstalledDevice>? after = null;
         Dependencies? api = dependencies;
@@ -325,9 +328,10 @@ internal static class FilteredDriverInstall
                     // here bans one more path: bounded by the candidates.
                 reselect:
                     decision = api.Select(device, Allowed, cancellation);
-                    if (decision.Candidate is not null)
+                    if (decision.Candidate is not null || decision.Store is not null)
                     {
-                        // Capture immediately before hand-off; reselect if relevant state changed.
+                        // Capture immediately before any hand-off, the WIM's driver or the
+                        // store's; reselect if relevant state changed.
                         var current = Capture().Where(x => string.Equals(x.InstanceId, device.InstanceId, StringComparison.OrdinalIgnoreCase)).ToArray();
                         if (current.Length != 1)
                         {
@@ -341,11 +345,12 @@ internal static class FilteredDriverInstall
                     }
                     processed.Add(DeviceState(device));
                     // Keep the reason that led to an installation over a later "already current".
-                    if (decision.Candidate is not null || !reasons.ContainsKey(device.InstanceId)) reasons[device.InstanceId] = decision.Reason;
+                    bool installs = decision.Candidate is not null || decision.Store is not null;
+                    if (installs || !reasons.ContainsKey(device.InstanceId)) reasons[device.InstanceId] = decision.Reason;
                     // A device whose package Windows refused is neither driverless
                     // nor up to date, whatever is left to choose from.
                     bool wasRefused = refusedDevices.Contains(device.InstanceId);
-                    if (wasRefused && decision.Candidate is null) reasons[device.InstanceId] = "Windows refused the selected package.";
+                    if (wasRefused && !installs) reasons[device.InstanceId] = "Windows refused the selected package.";
                     if (decision.Store is { } store)
                     {
                         // A driver already in this PC's store beats the WIM's: Windows installs
@@ -381,7 +386,9 @@ internal static class FilteredDriverInstall
                         string storeDriver = $"{SafeText.Path(Path.GetFileName(store.Inf))} {store.Date:yyyy-MM-dd} {Version(store.Version)}";
                         if (storeOutcome.Installed)
                         {
+                            // As a WIM install does: a package Windows refused for it is replaced now.
                             succeeded++;
+                            refusedDevices.Remove(device.InstanceId);
                             expected.Add((device.InstanceId, store.Inf, StoreModel(store), true));
                             report.Add(("Installed", Who(device.InstanceId), $"from this PC's driver store, {storeDriver}: a better match than the WIM's" + (storeOutcome.Restart ? "; restart required" : "")));
                         }
