@@ -2,7 +2,7 @@
 
 # WIM Driver Mount
 
-Version 0.10.0 · Jericho Jones · MIT (third-party notices in `licenses`).
+Version 0.10.1 · Jericho Jones · MIT (third-party notices in `licenses`).
 
 WIM Driver Mount mounts a WIM image as a read-only drive, without extracting it. The WIM can be on a local disk, a network share, or an HTTP/HTTPS server.
 
