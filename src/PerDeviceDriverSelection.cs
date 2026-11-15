@@ -127,7 +127,14 @@ internal static class PerDeviceDriverSelection
         // Windows installs from the whole driver store, not from one offered package: when a
         // driver already there beats the WIM's best (lower rank; at equal rank newer date, then
         // higher version, Windows' order), the WIM's is not installed and Windows' own choice is.
-        // The installed driver is in that list too; it was compared above, so it is not a store win.
+        // The installed driver is in that list too. When Windows' store choice is the installed
+        // package itself (same published INF, date and version) and it beats the WIM's best, the
+        // rank the decision above used for it was too low: DEVPKEY_Device_DriverRank is the rank
+        // at install time, and one INF can hold a node that matches the device's current IDs
+        // better than the bound one. Windows would keep that package, so the WIM's is not
+        // installed. On the bound node that is a keep, as pnputil /add-driver /install leaves
+        // the device; on another node of the package Windows is asked to install, as a re-scan
+        // would bind that node.
         Decision AgainstStore(Decision decision)
         {
             if (windows.Store is null) return decision;
@@ -135,16 +142,27 @@ internal static class PerDeviceDriverSelection
             try { store = windows.Store(device); }
             catch (Exception error) when (error is Win32Exception or InvalidDataException) { return new(null, CannotRankStore); }
             if (store is null) return decision;
-            if (!device.Unbound && string.Equals(Path.GetFileName(store.Inf), device.Inf, StringComparison.OrdinalIgnoreCase) &&
-                store.Date == installedDate && store.Version == installedVersion) return decision;
             var chosen = candidates.First(match => ReferenceEquals(match.Model, decision.Candidate) || match.Model == decision.Candidate);
             uint rank = RankOf(chosen);
             var version = chosen.Model.DriverVersion!;
             bool storeBetter = store.Rank < rank || store.Rank == rank &&
                 (store.Date > version.Date!.Value || store.Date == version.Date.Value && store.Version > version.Version!.Value);
-            return storeBetter ? new(null, StoreBetter, Store: store) : decision;
+            if (!storeBetter) return decision;
+            bool installedPackage = !device.Unbound && string.Equals(Path.GetFileName(store.Inf), device.Inf, StringComparison.OrdinalIgnoreCase) &&
+                store.Date == installedDate && store.Version == installedVersion;
+            if (installedPackage && SameSection(device.Section, store.Section)) return new(null, store.Rank < rank ? Outranked : NotNewer);
+            return new(null, StoreBetter, Store: store);
         }
     }
+
+    // Windows names a store node by its base DDInstall section; a device records the decorated
+    // one it installed (InfSection + InfSectionExt, where the extension is a platform decoration:
+    // .NT, .NTamd64, .NTarm64.10.0...). A base section may itself contain a period, so only a
+    // remainder that is such a decoration makes the two the same node. A device whose section
+    // is unknown is taken to be on the store's node: nothing is installed then.
+    private static bool SameSection(string? installed, string store) => installed is null ||
+        installed.StartsWith(store, StringComparison.OrdinalIgnoreCase) &&
+        (installed.Length == store.Length || installed.AsSpan(store.Length).StartsWith(".NT", StringComparison.OrdinalIgnoreCase));
 
     private static bool IsInstalledDriver(InfIndex.ModelEntry model, DriverDetection.InstalledDevice device, DateOnly installedDate, ulong installedVersion,
         Func<InfIndex.ModelEntry, DriverDetection.InstalledDevice, bool>? sameInf) =>

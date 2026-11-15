@@ -33,8 +33,8 @@ internal static class FilteredDriverInstall
         // (Decision.Store): nothing from the WIM is staged for it.
         Func<string, DriverDetection.SelectedInstallResult>? InstallFromStore = null);
 
-    // A store driver in the shape the journal and the final check already use for a WIM
-    // driver: its published INF stands where the WIM path would.
+    // A store driver in the shape the final check already uses for a WIM driver: its published
+    // INF stands where the WIM path would.
     private static InfIndex.ModelEntry StoreModel(DriverDetection.StoreDriver store) =>
         new(store.Inf, "", store.Section, store.Section, "", Array.Empty<string>(), true, store.Section, null, new(store.Date, store.Version));
 
@@ -51,6 +51,10 @@ internal static class FilteredDriverInstall
         InfIndex.DriverVersionInfo? DriverVersion);
     internal sealed record ExtensionIntentJson(string Kind, string Path, string? ExtensionId, string InstallSection,
         string? ActualInstallSection, InfIndex.DriverVersionInfo? DriverVersion, List<string> Devices);
+    // A store install's intent says so (Kind), names the published INF and the name its package
+    // gave it, and names no WIM path: Windows chose the driver, and no WIM folder was involved.
+    internal sealed record StoreIntentJson(string Kind, string InstanceId, string? InstalledInf, string? InstalledSection, string? InstalledDate,
+        string? InstalledVersion, bool Unbound, string Inf, string OriginalInf, string Section, InfIndex.DriverVersionInfo? DriverVersion);
 
     internal static string DeviceState(DriverDetection.InstalledDevice device) => JsonSerializer.Serialize(new DeviceStateJson(
         device.InstanceId.ToUpperInvariant(), device.HardwareIds.Select(x => x.ToUpperInvariant()).ToArray(),
@@ -70,6 +74,10 @@ internal static class FilteredDriverInstall
     internal static string ExtensionIntent(InfIndex.ModelEntry model, List<string> devices) => JsonSerializer.Serialize(new ExtensionIntentJson(
         "extension", model.Path, model.ExtensionId, model.InstallSection, model.ActualInstallSection, model.DriverVersion, devices),
         FilteredDriverJson.Default.ExtensionIntentJson);
+
+    internal static string StoreIntent(DriverDetection.InstalledDevice device, DriverDetection.StoreDriver store) => JsonSerializer.Serialize(new StoreIntentJson(
+        "store", device.InstanceId, device.Inf, device.Section, device.Date, device.Version, device.Unbound,
+        store.Inf, store.OriginalInf, store.Section, new(store.Date, store.Version)), FilteredDriverJson.Default.StoreIntentJson);
 
     internal static string Outcome(DriverDetection.SelectedInstallResult outcome) => JsonSerializer.Serialize(outcome, FilteredDriverJson.Default.SelectedInstallResult);
     internal static string Outcome(DriverDetection.ExtensionInstallResult outcome) => JsonSerializer.Serialize(outcome, FilteredDriverJson.Default.ExtensionInstallResult);
@@ -392,7 +400,7 @@ internal static class FilteredDriverInstall
                             continue;
                         }
                         int storeSequence = started + 1;
-                        try { journal.WriteSelectedIntent(storeSequence, SelectedIntent(device, StoreModel(store))); }
+                        try { journal.WriteSelectedIntent(storeSequence, StoreIntent(device, store)); }
                         catch { uncertain = true; throw; }
                         started = storeSequence;
                         inFlight = true;
@@ -721,6 +729,7 @@ internal static class FilteredDriverInstall
 [System.Text.Json.Serialization.JsonSerializable(typeof(FilteredDriverInstall.CandidateStateJson))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(FilteredDriverInstall.SelectedIntentJson))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(FilteredDriverInstall.ExtensionIntentJson))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(FilteredDriverInstall.StoreIntentJson))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(DriverDetection.SelectedInstallResult))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(DriverDetection.ExtensionInstallResult))]
 internal sealed partial class FilteredDriverJson : System.Text.Json.Serialization.JsonSerializerContext;

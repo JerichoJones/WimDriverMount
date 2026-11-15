@@ -57,7 +57,14 @@ internal static partial class DriverDetection
             var parameters = new InstallParams { Size = (uint)Marshal.SizeOf<InstallParams>(), DriverPath = string.Empty };
             if (!SetupDiGetDeviceInstallParamsW(set, ref device, ref parameters))
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot read device installation parameters.");
-            parameters.Flags &= ~0x00010000u; // not DI_ENUMSINGLEINF: the default INF location is the store
+            // The store's published INFs by name, not SetupAPI's default search path: that is the
+            // DevicePath registry list, which an OEM image can extend with folders outside the
+            // store (C:\Drivers and the like, often writable by every user). A package planted
+            // there is not what DiInstallDevice installs from the store, so it must not be the
+            // answer here. Checked: the same choice as the default path on every device of a
+            // stock PC, no slower. RECURSIVESEARCH stays off, as it is for the default path.
+            parameters.DriverPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "INF");
+            parameters.Flags &= ~0x00010000u; // not DI_ENUMSINGLEINF: the whole folder
             parameters.FlagsEx &= ~(RecursiveSearch | InstalledDriverOnly | UseClassForCompat | AppendDriverList);
             parameters.FlagsEx |= AllowExcludedDrivers;
             if (!SetupDiSetDeviceInstallParamsW(set, ref device, ref parameters) ||
