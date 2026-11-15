@@ -6,7 +6,7 @@ using System.Globalization;
 // real hardware.
 internal static class PerDeviceDriverSelection
 {
-    internal sealed record Decision(InfIndex.ModelEntry? Candidate, string Reason);
+    internal sealed record Decision(InfIndex.ModelEntry? Candidate, string Reason, IReadOnlyList<InfIndex.ModelEntry>? Winners = null);
     internal const string NoCandidate = "The WIM has no driver for this device.", NotNewer = "The installed driver is as new or newer.",
         Outranked = "The installed driver is a better match.";
 
@@ -21,7 +21,8 @@ internal static class PerDeviceDriverSelection
         Func<DriverDetection.InstalledDevice, bool> InstalledAsEstimated, uint SignerFloor = 0);
 
     internal static Decision Select(DriverDetection.InstalledDevice device,
-        IReadOnlyList<InMemoryDriverMatcher.Match> matches, bool indexComplete, WindowsRanks? windows = null)
+        IReadOnlyList<InMemoryDriverMatcher.Match> matches, bool indexComplete, WindowsRanks? windows = null,
+        Func<InfIndex.ModelEntry, DriverDetection.InstalledDevice, bool>? sameInf = null)
     {
         // Without trustworthy IDs, neither a match nor its absence is known.
         if (device.IdsUncertain) return new(null, "Device IDs could not be read.");
@@ -40,12 +41,15 @@ internal static class PerDeviceDriverSelection
         if (candidates.Any(match => match.Model.DriverVersion?.Date is null || match.Model.DriverVersion.Version is null))
             return new(null, "A matching WIM driver has no date (DriverVer), so it cannot be compared.");
         // The installed driver itself, offered again by the WIM (same INF, install section,
-        // date and version), is never an upgrade: when it ranks best, Windows marks that
-        // node as the installed driver and keeps it, even where the WIM's copy matches a
-        // more specific ID. It still ranks, so a driver it beats is not chosen either.
-        // Seen comparing with Windows' own choice on real hardware.
-        Decision Final(Decision decision) => decision.Candidate is { } chosen && !device.Unbound &&
-            IsInstalledDriver(chosen, device, installedDate, installedVersion) ? new(null, NotNewer) : decision;
+        // date and version, and sameInf: the very same file), is never an upgrade: when it
+        // ranks best, Windows marks that node as the installed driver and keeps it, even
+        // where the WIM's copy matches a more specific ID. It still ranks, so a driver it
+        // beats is not chosen either. On a tie it is kept when any winner is the installed
+        // driver, so folder names cannot flip the result. Seen comparing with Windows' own
+        // choice on real hardware (ties not measured: keeping is the conservative side).
+        Decision Final(Decision decision) => decision.Candidate is not null && !device.Unbound &&
+            (decision.Winners ?? [decision.Candidate]).Any(chosen => IsInstalledDriver(chosen, device, installedDate, installedVersion, sameInf))
+            ? new(null, NotNewer) : decision;
 
         // The device property never carries the bound driver's signer byte, so
         // this is its rank without one, as CandidateRank is for a candidate.
@@ -109,8 +113,10 @@ internal static class PerDeviceDriverSelection
         }
     }
 
-    private static bool IsInstalledDriver(InfIndex.ModelEntry model, DriverDetection.InstalledDevice device, DateOnly installedDate, ulong installedVersion) =>
+    private static bool IsInstalledDriver(InfIndex.ModelEntry model, DriverDetection.InstalledDevice device, DateOnly installedDate, ulong installedVersion,
+        Func<InfIndex.ModelEntry, DriverDetection.InstalledDevice, bool>? sameInf) =>
         device.OriginalInf is { Length: > 0 } original && device.Section is { Length: > 0 } section &&
+        (sameInf is null || sameInf(model, device)) &&
         string.Equals(Path.GetFileName(model.Path), original, StringComparison.OrdinalIgnoreCase) &&
         string.Equals(model.ActualInstallSection ?? model.InstallSection, section, StringComparison.OrdinalIgnoreCase) &&
         model.DriverVersion?.Date == installedDate && model.DriverVersion.Version == installedVersion;
@@ -123,7 +129,7 @@ internal static class PerDeviceDriverSelection
     {
         var (winners, bestRank, newestDate, newestVersion) = Rank(candidates, rankOf);
         string tie = Tie(winners.Length, "candidates", signed);
-        if (device.Unbound) return new(winners[0], "No driver is installed yet." + tie);
+        if (device.Unbound) return new(winners[0], "No driver is installed yet." + tie, winners);
 
         // Compare against Windows' own rank for the bound driver. Lower is
         // better; at equal rank DriverVer decides, as in Windows.
@@ -131,12 +137,12 @@ internal static class PerDeviceDriverSelection
         {
             if (installed < bestRank) return new(null, Outranked);
             if (installed > bestRank)
-                return new(winners[0], "The WIM driver is a better match than the installed one." + tie);
+                return new(winners[0], "The WIM driver is a better match than the installed one." + tie, winners);
         }
 
         if (newestDate < installedDate || (newestDate == installedDate && newestVersion <= installedVersion))
             return new(null, NotNewer);
-        return new(winners[0], "The WIM driver is newer than the installed one." + tie);
+        return new(winners[0], "The WIM driver is newer than the installed one." + tie, winners);
     }
 
     // Microsoft: "For driver packages that have equal rank, date, and version,
@@ -197,7 +203,8 @@ internal static class PerDeviceDriverSelection
     // rank, date and version decide, as here. With it off, extensions from different INFs
     // competing for one ExtensionId could be decided by who signed them: none is guessed.
     internal static IReadOnlyList<ExtensionDecision> SelectExtensions(DriverDetection.InstalledDevice device,
-        IReadOnlyList<InMemoryDriverMatcher.Match> matches, bool indexComplete, bool signersEqual = true)
+        IReadOnlyList<InMemoryDriverMatcher.Match> matches, bool indexComplete, bool signersEqual = true,
+        Func<InfIndex.ModelEntry, string>? packageKey = null)
     {
         if (device.IdsUncertain || device.CaptureError is not null || !indexComplete) return [];
         var result = new List<ExtensionDecision>();
@@ -210,7 +217,7 @@ internal static class PerDeviceDriverSelection
                 result.Add(new(group.Key, null, "A matching extension has no date (DriverVer), so it cannot be compared."));
                 continue;
             }
-            if (!signersEqual && candidates.Select(match => match.Model.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1)
+            if (!signersEqual && candidates.Select(match => packageKey?.Invoke(match.Model) ?? match.Model.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1)
             {
                 result.Add(new(group.Key, null, "Several extensions in the WIM compete, and with \"Treat all digitally signed drivers equally\" off who signed each could decide; Windows cannot be asked to rank extensions, so none was chosen."));
                 continue;
@@ -219,6 +226,67 @@ internal static class PerDeviceDriverSelection
             result.Add(new(group.Key, winners[0], "The best extension in the WIM for this device." + Tie(winners.Length, "extension candidates")));
         }
         return result;
+    }
+
+    // How to read the WIM's files by the paths its models carry (mount-style paths for
+    // files inside the image, not on disk): one file's bytes, or null when unreadable or
+    // too large; and the catalogs in the same folder as an INF.
+    internal sealed record InfFiles(Func<string, byte[]?> Read, Func<string, IReadOnlyList<byte[]>> CatalogsBeside);
+
+    internal static InfFiles? FilesOf(DiscUtils.Wim.WimFileSystem? image, string? mount)
+    {
+        if (image is null || mount is null) return null;
+        const long Max = 64L << 20;
+        string Image(string path) => "\\" + path[mount.Length..];
+        byte[]? ReadImage(string imagePath)
+        {
+            try
+            {
+                if (image.GetFileLength(imagePath) > Max) return null;
+                using var stream = image.OpenFile(imagePath, FileMode.Open, FileAccess.Read);
+                using var memory = new MemoryStream();
+                stream.CopyTo(memory);
+                return memory.Length > Max ? null : memory.ToArray();
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException or NotSupportedException) { return null; }
+        }
+        return new(path => path.StartsWith(mount, StringComparison.OrdinalIgnoreCase) ? ReadImage(Image(path)) : null, path =>
+        {
+            try
+            {
+                if (!path.StartsWith(mount, StringComparison.OrdinalIgnoreCase)) return [];
+                return image.GetFiles(Path.GetDirectoryName(Image(path)) ?? "\\", "*.cat", SearchOption.TopDirectoryOnly)
+                    .Select(ReadImage).Where(bytes => bytes is not null).Select(bytes => bytes!).ToArray();
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { return []; }
+        });
+    }
+
+    // True when the WIM's INF is byte for byte the INF Windows published for the
+    // device (%windir%\INF\oemN.inf, or the inbox INF itself). A catalog-signed INF is
+    // identical to its published copy, so a lookalike with the same name, section and
+    // DriverVer but other contents is not the installed driver.
+    internal static bool SameAsPublishedInf(InfIndex.ModelEntry model, DriverDetection.InstalledDevice device, InfFiles files)
+    {
+        const long Max = 32L << 20;
+        try
+        {
+            if (device.Inf is not { Length: > 0 } published || published != Path.GetFileName(published)) return false;
+            var installed = new FileInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "INF", published));
+            if (!installed.Exists || installed.Length > Max || files.Read(model.Path) is not { } wim || wim.Length != installed.Length) return false;
+            return File.ReadAllBytes(installed.FullName).AsSpan().SequenceEqual(wim);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { return false; }
+    }
+
+    // One key per package: the INF's bytes and every catalog beside it. Copies of one
+    // package in several folders share a key; a copy with different or missing catalogs
+    // does not. An unreadable INF is its own key.
+    internal static string PackageKey(InfIndex.ModelEntry model, InfFiles files)
+    {
+        if (files.Read(model.Path) is not { } inf) return model.Path;
+        string Hash(byte[] bytes) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
+        return Hash(inf) + "|" + string.Join(",", files.CatalogsBeside(model.Path).Select(Hash).Order(StringComparer.Ordinal));
     }
 
     internal static bool TryVersion(string? value, out ulong result)

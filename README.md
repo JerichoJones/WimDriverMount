@@ -98,7 +98,8 @@ How the tool checks:
 - So wherever the signer could change the decision, Windows is asked to rank that driver itself. For that, the tool copies just the package's INF and the one catalog it names from the WIM, into a folder under System32 that only administrators can open. The folder is removed afterwards.
 - Devices the signer can't affect cost nothing extra.
 - Extensions: Windows ranks them with the signer too, but it cannot be asked to rank one. With the policy on, every signed extension scores the same, so the choice is exact. With it off, if extensions from different INFs compete for the same kind of extension, that extension is left undecided rather than guessed.
-- The installed driver itself, offered again by the WIM, is never an upgrade: Windows keeps it, even when the WIM's copy matches the device more specifically.
+- The installed driver itself, offered again by the WIM (the same INF file, byte for byte), is never an upgrade: Windows keeps it, even when the WIM's copy matches the device more specifically. Observed on real devices; if it ties with another driver, the installed one is kept.
+- Identical copies of one extension (same INF and catalog) in several folders count as one. A different or catalog-less copy still makes the choice undecided.
 - Windows checks every signature and does the installation itself.
 
 When Windows won't use a package:
@@ -122,7 +123,7 @@ Checked against Windows' own choice, without installing anything: for every devi
 | INF parsing | Identical on 949 INFs |
 | Candidate lists | 260 of 260 devices |
 
-Measured not to change the choice: drivers marked `ExcludeFromSelect` (they competed on 434 devices) and drivers of another device class (49 devices); both sides agreed on every one. Microsoft also ranks a "basic driver" below a specific one, but no INF on Windows 11 is marked as one (none of 4,723 in-box drivers).
+Measured not to change the choice: drivers marked `ExcludeFromSelect` (they competed on 434 devices) and drivers of another device class (49 devices); both sides agreed on every one. Microsoft also ranks a "basic driver" below a specific one, but none of the 4,723 in-box drivers on Windows 11 is marked as one.
 
 That is not a guarantee for every machine.
 

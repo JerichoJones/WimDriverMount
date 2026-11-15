@@ -71,9 +71,10 @@ internal static class FilteredDriverInstall
     {
         var matcher = index.CreateMatcher(cancellation);
         var windows = ranks?.Ranks;
+        var files = PerDeviceDriverSelection.FilesOf(index.Image, index.Mount);
         return (device, allowed, token) => PerDeviceDriverSelection.Select(device,
             matcher.Find(device.HardwareIds, device.CompatibleIds, token).Where(match => allowed(match.Model)).ToList(),
-            index.IsSelectionCompleteFor(device.HardwareIds, device.CompatibleIds), windows);
+            index.IsSelectionCompleteFor(device.HardwareIds, device.CompatibleIds), windows, files is null ? null : (m, d) => PerDeviceDriverSelection.SameAsPublishedInf(m, d, files));
     }
 
     private static Func<DriverDetection.InstalledDevice, Func<InfIndex.ModelEntry, bool>, CancellationToken, IReadOnlyList<PerDeviceDriverSelection.ExtensionDecision>> ExtensionSelector(
@@ -81,9 +82,10 @@ internal static class FilteredDriverInstall
     {
         var matcher = index.CreateExtensionMatcher(cancellation);
         bool signersEqual = ranks?.SignersEqual ?? true;
+        var files = PerDeviceDriverSelection.FilesOf(index.Image, index.Mount);
         return (device, allowed, token) => PerDeviceDriverSelection.SelectExtensions(device,
             matcher.Find(device.HardwareIds, device.CompatibleIds, token).Where(match => allowed(match.Model)).ToList(),
-            index.IsSelectionCompleteFor(device.HardwareIds, device.CompatibleIds), signersEqual);
+            index.IsSelectionCompleteFor(device.HardwareIds, device.CompatibleIds), signersEqual, files is null ? null : m => PerDeviceDriverSelection.PackageKey(m, files));
     }
 
     // Windows' own verdict on a package: SetupAPI's errors (0xE000xxxx; a tampered
