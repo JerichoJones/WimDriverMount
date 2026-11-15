@@ -310,7 +310,9 @@ internal static class FilteredDriverInstall
         bool Allowed(InfIndex.ModelEntry model) => !refusedPackages.Contains(model.Path);
         // FromStore: Windows chose the driver. Windows reports a store driver's base DDInstall
         // section, while a device reports the decorated one it installed (InfSection +
-        // InfSectionExt), so the final check compares its INF, date and version only.
+        // InfSectionExt), so the final check compares the section as PerDeviceDriverSelection.SameSection
+        // does: one package can hold several nodes with the same INF, date and version, and a hand-off
+        // that left the device on the node it already had is not an install.
         var expected = new List<(string Instance, string? Published, InfIndex.ModelEntry Model, bool FromStore)>();
         IReadOnlyList<DriverDetection.InstalledDevice>? after = null;
         Dependencies? api = dependencies;
@@ -662,8 +664,9 @@ internal static class FilteredDriverInstall
                 bool versionKnown = PerDeviceDriverSelection.TryVersion(final?.Version, out ulong parsedVersion);
                 bool verified = final is not null && final.CaptureError is null && !string.IsNullOrWhiteSpace(item.Published) &&
                     string.Equals(final.Inf, Path.GetFileName(item.Published), StringComparison.OrdinalIgnoreCase) &&
-                    (item.FromStore || !string.IsNullOrWhiteSpace(final.Section) && !string.IsNullOrWhiteSpace(item.Model.ActualInstallSection) &&
-                    string.Equals(final.Section, item.Model.ActualInstallSection, StringComparison.OrdinalIgnoreCase)) &&
+                    !string.IsNullOrWhiteSpace(final.Section) && !string.IsNullOrWhiteSpace(item.Model.ActualInstallSection) &&
+                    (item.FromStore ? PerDeviceDriverSelection.SameSection(final.Section, item.Model.ActualInstallSection)
+                        : string.Equals(final.Section, item.Model.ActualInstallSection, StringComparison.OrdinalIgnoreCase)) &&
                     ver?.Date is not null && final.Date == ver.Date.Value.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) &&
                     versionKnown && ver.Version == parsedVersion;
                 if (!verified)

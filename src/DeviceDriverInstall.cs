@@ -29,11 +29,19 @@ internal static partial class DriverDetection
     private static extern bool DiInstallDeviceBest(IntPtr parent, IntPtr set, ref DeviceInfo device,
         IntPtr noDriver, uint flags, [MarshalAs(UnmanagedType.Bool)] out bool reboot);
 
+    // An instance ID this program will hand to SetupAPI: the capture's own shape, before any
+    // native call. Shared by every entry point that opens a device by ID.
+    internal static void CheckInstanceId(string instanceId)
+    {
+        if (string.IsNullOrWhiteSpace(instanceId) || instanceId.Contains('\0') || instanceId.Length >= 1024)
+            throw new InvalidDataException("Device instance ID is invalid.");
+    }
+
     // Lets Windows install the best driver already in this PC's driver store on the device
     // (DiInstallDevice without a driver: "searches the drivers preinstalled in the driver store
     // for the driver that is the best match"). Used where that driver beats the WIM's best, so
-    // the end state is the one pnputil /add-driver /install or a re-scan gives. Nothing is
-    // staged: the WIM's package is not the one Windows would use.
+    // the end state is the one a device re-scan gives. Nothing is staged: the WIM's package is
+    // not the one Windows would use.
     internal static SelectedInstallResult InstallFromStore(string instanceId)
     {
         bool attempted = false, installed = false, restart = false, inFlight = false;
@@ -43,8 +51,7 @@ internal static partial class DriverDetection
         var device = new DeviceInfo { Size = (uint)Marshal.SizeOf<DeviceInfo>() };
         try
         {
-            if (string.IsNullOrWhiteSpace(instanceId) || instanceId.Contains('\0') || instanceId.Length >= 1024)
-                throw new InvalidDataException("Device instance ID is invalid.");
+            CheckInstanceId(instanceId);
             set = SetupDiCreateDeviceInfoList(IntPtr.Zero, IntPtr.Zero);
             if (set == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot create device set.");
             if (!SetupDiOpenDeviceInfoW(set, instanceId, IntPtr.Zero, 0, ref device))

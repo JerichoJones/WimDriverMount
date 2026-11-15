@@ -38,14 +38,15 @@ internal static partial class DriverDetection
     // section, rank, date and version.
     internal sealed record StoreDriver(string Inf, string OriginalInf, string Section, uint Rank, DateOnly Date, ulong Version);
 
-    // What a device re-scan, or pnputil /add-driver /install, ends with: Windows' own
-    // choice over every published INF (%SystemRoot%\inf, the driver store) plus the
-    // installed driver. The WIM is not in that list; the caller compares. Null when
-    // Windows selects nothing there; a failure to ask throws. Measured: ~50 ms a device.
+    // What a device re-scan ends with (measured on the test VM): Windows' own choice over
+    // every published INF (%SystemRoot%\inf, the driver store) plus the installed driver.
+    // The WIM is not in that list; the caller compares. Null when Windows selects nothing
+    // there; a failure to ask throws. Measured: ~50 ms a device.
     // (Jericho, 2026-11-15: the tool does what Windows does when the store already holds
     // a better driver than the WIM's, instead of installing the WIM's as DiInstallDriver would.)
     internal static StoreDriver? StoreBest(string instanceId)
     {
+        CheckInstanceId(instanceId);
         IntPtr set = SetupDiCreateDeviceInfoList(IntPtr.Zero, IntPtr.Zero);
         if (set == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot create device set.");
         var device = new DeviceInfo { Size = (uint)Marshal.SizeOf<DeviceInfo>() };

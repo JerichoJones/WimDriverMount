@@ -119,10 +119,17 @@ internal static partial class DriverDetection
                 if (ids.Length != 0) compatible = string.Join('\0', ids) + "\0\0";
             }
             long date = ((long)(uint)driver.DriverDate.dwHighDateTime << 32) | (uint)driver.DriverDate.dwLowDateTime;
+            // A malformed string (a lone surrogate an INF's [Strings] can carry) makes the node
+            // unreadable, as every other malformed detail does: callers skip such a node or leave
+            // the device undecided, so one bad INF in a WIM or the store cannot end the whole run.
             var strictUnicode = new UnicodeEncoding(false, false, true);
-            foreach (string value in new[] { detail.InfFileName, detail.SectionName, hardware, compatible,
-                driver.Description, driver.Manufacturer, driver.Provider })
-                _ = strictUnicode.GetByteCount(value);
+            try
+            {
+                foreach (string value in new[] { detail.InfFileName, detail.SectionName, hardware, compatible,
+                    driver.Description, driver.Manufacturer, driver.Provider })
+                    _ = strictUnicode.GetByteCount(value);
+            }
+            catch (EncoderFallbackException error) { throw new InvalidDataException("Driver details are not valid UTF-16.", error); }
             return new IndexedMatch(detail.InfFileName, detail.SectionName, hardware, compatible,
                 driver.Description, driver.Manufacturer, driver.Provider, driver.DriverVersion, date);
         }

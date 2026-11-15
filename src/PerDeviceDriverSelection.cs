@@ -8,7 +8,7 @@ using System.Globalization;
 internal static class PerDeviceDriverSelection
 {
     // Store: no WIM candidate, because a driver already in this PC's driver store beats the
-    // WIM's best; Windows installs that one (what a re-scan or pnputil /add-driver /install does).
+    // WIM's best; Windows installs that one (what a device re-scan does).
     internal sealed record Decision(InfIndex.ModelEntry? Candidate, string Reason, IReadOnlyList<InfIndex.ModelEntry>? Winners = null,
         DriverDetection.StoreDriver? Store = null);
     internal const string NoCandidate = "The WIM has no driver for this device.", NotNewer = "The installed driver is as new or newer.",
@@ -161,8 +161,10 @@ internal static class PerDeviceDriverSelection
     // one it installed (InfSection + InfSectionExt, where the extension is a platform decoration:
     // .NT, .NTamd64, .NTarm64.10.0...). A base section may itself contain a period, so only a
     // remainder that is such a decoration makes the two the same node. A device whose section
-    // is unknown is taken to be on the store's node: nothing is installed then.
-    private static bool SameSection(string? installed, string store) => installed is null ||
+    // is unknown is taken to be on the store's node: nothing is installed then. The final check
+    // after a store install uses the same test (FilteredDriverInstall), so a hand-off that left the
+    // device on another node of the same package is not taken as verified.
+    internal static bool SameSection(string? installed, string store) => installed is null ||
         installed.StartsWith(store, StringComparison.OrdinalIgnoreCase) &&
         (installed.Length == store.Length || installed.AsSpan(store.Length).StartsWith(".NT", StringComparison.OrdinalIgnoreCase));
 
