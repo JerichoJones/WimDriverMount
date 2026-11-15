@@ -163,6 +163,16 @@ internal static class DokanLifecycle
         int before;
         try { before = backend.ProductState(); }
         catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException) { noInstaller = true; before = -1; }
+        if (noInstaller)
+        {
+            // A record of our own cannot be checked against anything here, so it is
+            // neither trusted nor forgotten: the run ends and nothing is changed.
+            if (state.Exists)
+                throw new IOException("WIM Driver Mount has a record of a Dokan install of its own here, but there is no Windows Installer to check it against. The record was kept and nothing was changed.");
+            // Nothing could be installed here either; say so before setup's download starts.
+            if (!backend.FilesPresent())
+                throw new IOException(@"Windows Installer is not available here (for example Windows PE), so Dokan cannot be installed. Place Dokan 2.3 or later's dokan2.sys in System32\drivers and dokan2.dll in System32 beforehand, and run with --no-install-dokan.");
+        }
         // Dokan we owned is gone -- uninstalled from Settings, or removed by us
         // before the record could be cleared. There is nothing left to own, so
         // the record goes and setup starts afresh; a fresh install reports any
@@ -177,16 +187,18 @@ internal static class DokanLifecycle
         if (!state.Exists && before != -1 && !backend.FilesPresent())
             throw new IOException("Windows lists Dokan as installed, but its files are missing. Uninstall Dokan in Settings > Apps, then run this again.");
         var result = backend.Ensure();
-        // Ensure has already refused when the files are missing, so this is a present
-        // Dokan; without Windows Installer there is no product to own or to remove.
-        if (noInstaller)
+        // Setup accepted the files it found (present, version checked, nothing more);
+        // without Windows Installer there is no product to own or to remove. Had setup
+        // installed something after all, that cannot be confirmed here either, and the
+        // usual refusal below says so.
+        if (noInstaller && !result.InstallerReportedSuccess)
         {
-            Console.WriteLine("Dokan is already present and will be left in place (there is no Windows Installer here to ask about it).");
+            Console.WriteLine("Dokan files are present (not verified further) and will be left in place: there is no Windows Installer here to ask about it.");
             return result;
         }
         if (result.InstallerReportedSuccess)
         {
-            if (before != -1 || backend.ProductState() != 5 || state.Exists)
+            if (noInstaller || before != -1 || backend.ProductState() != 5 || state.Exists)
             {
                 OwnershipUnconfirmed = true; // A settings-file run stops its later mounts too.
                 throw new IOException("Dokan was installed, but WIM Driver Mount could not confirm that it installed it, so it will never remove it. This mount was not made. Run the same command again.");
