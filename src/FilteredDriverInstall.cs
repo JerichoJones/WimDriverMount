@@ -38,9 +38,10 @@ internal static class FilteredDriverInstall
         Func<DriverDetection.InstalledDevice, Func<InfIndex.ModelEntry, bool>, CancellationToken, bool>? HasDriver = null);
 
     // A store driver in the shape the final check already uses for a WIM driver: its published
-    // INF stands where the WIM path would.
+    // INF stands where the WIM path would, and the section Windows installs for its node on this
+    // platform (what the device records) where the WIM model's resolved section would.
     private static InfIndex.ModelEntry StoreModel(DriverDetection.StoreDriver store) =>
-        new(store.Inf, "", store.Section, store.Section, "", Array.Empty<string>(), true, store.Section, null, new(store.Date, store.Version));
+        new(store.Inf, "", store.Section, store.Section, "", Array.Empty<string>(), true, store.ActualSection, null, new(store.Date, store.Version));
 
     // The JSON these write is compared and journaled, so its shape is fixed: the
     // records below list the properties in the order they have always been written.
@@ -308,12 +309,11 @@ internal static class FilteredDriverInstall
         // the operator asked for an install that Windows would not do, so the run fails.
         var refusedDevices = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         bool Allowed(InfIndex.ModelEntry model) => !refusedPackages.Contains(model.Path);
-        // FromStore: Windows chose the driver. Windows reports a store driver's base DDInstall
-        // section, while a device reports the decorated one it installed (InfSection +
-        // InfSectionExt), so the final check compares the section as PerDeviceDriverSelection.SameSection
-        // does: one package can hold several nodes with the same INF, date and version, and a hand-off
-        // that left the device on the node it already had is not an install.
-        var expected = new List<(string Instance, string? Published, InfIndex.ModelEntry Model, bool FromStore)>();
+        // A store driver (Windows chose it) is expected by its published INF and the section Windows
+        // installs for its node on this platform (StoreModel), which is the name the device records:
+        // one package can hold several nodes with the same INF, date and version, and a hand-off that
+        // left the device on the node it already had is not an install.
+        var expected = new List<(string Instance, string? Published, InfIndex.ModelEntry Model)>();
         IReadOnlyList<DriverDetection.InstalledDevice>? after = null;
         Dependencies? api = dependencies;
         WindowsRankSource? ranks = dependencies?.Ranks;
@@ -443,7 +443,7 @@ internal static class FilteredDriverInstall
                             // As a WIM install does: a package Windows refused for it is replaced now.
                             succeeded++;
                             refusedDevices.Remove(device.InstanceId);
-                            expected.Add((device.InstanceId, store.Inf, StoreModel(store), true));
+                            expected.Add((device.InstanceId, store.Inf, StoreModel(store)));
                             report.Add(("Installed", Who(device.InstanceId), $"from this PC's driver store, {storeDriver}: a better match than the WIM's" + (storeOutcome.Restart ? "; restart required" : "")));
                             // Installed, but something after the call failed (its device set could not be
                             // released): the journal carries the error, so the run does too, as for a WIM install.
@@ -532,7 +532,7 @@ internal static class FilteredDriverInstall
                     else if (refused) { refusedPackages.Add(decision.Candidate.Path); refusedDevices.Add(device.InstanceId); processed.Remove(DeviceState(device)); }
                     else { failedDevices.Add(device.InstanceId); incomplete = true; }
                     if (outcome.ErrorDetail is not null && !refused) incomplete = true;
-                    if (outcome.Installed) expected.Add((device.InstanceId, outcome.PublishedInf, decision.Candidate, false));
+                    if (outcome.Installed) expected.Add((device.InstanceId, outcome.PublishedInf, decision.Candidate));
                     if (outcome.Installed)
                         report.Add(("Installed", Who(device.InstanceId), Driver(decision.Candidate) + (outcome.Restart ? "; restart required" : "")));
                     else if (refused)
@@ -665,8 +665,7 @@ internal static class FilteredDriverInstall
                 bool verified = final is not null && final.CaptureError is null && !string.IsNullOrWhiteSpace(item.Published) &&
                     string.Equals(final.Inf, Path.GetFileName(item.Published), StringComparison.OrdinalIgnoreCase) &&
                     !string.IsNullOrWhiteSpace(final.Section) && !string.IsNullOrWhiteSpace(item.Model.ActualInstallSection) &&
-                    (item.FromStore ? PerDeviceDriverSelection.SameSection(final.Section, item.Model.ActualInstallSection)
-                        : string.Equals(final.Section, item.Model.ActualInstallSection, StringComparison.OrdinalIgnoreCase)) &&
+                    string.Equals(final.Section, item.Model.ActualInstallSection, StringComparison.OrdinalIgnoreCase) &&
                     ver?.Date is not null && final.Date == ver.Date.Value.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) &&
                     versionKnown && ver.Version == parsedVersion;
                 if (!verified)

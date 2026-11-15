@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Text;
 
 // Windows' own rank for a driver on a device, as Windows computes it at this
 // moment: signer score, feature score and identifier score (0xSSGGTHHH). The
@@ -26,7 +27,17 @@ internal static partial class DriverDetection
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetupDiGetSelectedDriverW(IntPtr set, ref DeviceInfo device, ref DriverInfo driver);
-    private const uint DifSelectBestCompatDrv = 0x17, AppendDriverList = 0x00040000;
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static extern IntPtr SetupOpenInfFileW(string path, string? infClass, uint style, IntPtr errorLine);
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetupDiGetActualSectionToInstallW(IntPtr inf, string section, StringBuilder resolved, uint size, out uint required, IntPtr extension);
+    [DllImport("setupapi.dll", ExactSpelling = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static extern void SetupCloseInfFile(IntPtr inf);
+    private const uint DifSelectBestCompatDrv = 0x17, AppendDriverList = 0x00040000, InfStyleWin4 = 2;
     private const int NoCompatDrivers = unchecked((int)0xE0000228);
     // ERROR_NO_DRIVER_SELECTED is 0x203 in setupapi.h; 0x212 is ERROR_DEVINFO_LIST_LOCKED.
     internal const int NoDriverSelected = unchecked((int)0xE0000203);
@@ -36,9 +47,11 @@ internal static partial class DriverDetection
 
     // The driver Windows would install on this device from the packages already in this
     // PC's driver store: its published INF (the oemN.inf path Device Manager shows), the
-    // name its package gave that INF (the same file name for an inbox INF), install
-    // section, rank, date and version.
-    internal sealed record StoreDriver(string Inf, string OriginalInf, string Section, uint Rank, DateOnly Date, ulong Version);
+    // name its package gave that INF (the same file name for an inbox INF), the base
+    // DDInstall section Windows names the node by, the section it would install for that
+    // node on this platform (ActualSection: the base name, decorated as the INF decorates
+    // it; the base name again when Windows cannot say), rank, date and version.
+    internal sealed record StoreDriver(string Inf, string OriginalInf, string Section, string ActualSection, uint Rank, DateOnly Date, ulong Version);
 
     // What a device re-scan ends with (measured on the test VM): Windows' own choice over
     // every published INF (%SystemRoot%\inf, the driver store) plus the installed driver.
@@ -104,13 +117,41 @@ internal static partial class DriverDetection
             string original;
             try { original = OriginalInfOf(detail.Inf); }
             catch (Exception error) when (error is Win32Exception or InvalidDataException) { original = Path.GetFileName(detail.Inf); }
-            return new(detail.Inf, original, detail.Section, install.Rank, DateOnly.FromDateTime(DateTime.FromFileTimeUtc(detail.DriverDate)), detail.DriverVersion);
+            return new(detail.Inf, original, detail.Section, ActualSectionOf(detail.Inf, detail.Section), install.Rank,
+                DateOnly.FromDateTime(DateTime.FromFileTimeUtc(detail.DriverDate)), detail.DriverVersion);
         }
         finally
         {
             if (listBuilt) SetupDiDestroyDriverInfoList(set, ref device, CompatibleDriver);
             SetupDiDestroyDeviceInfoList(set);
         }
+    }
+
+    // The section Windows installs for a store node on this platform: the node's base DDInstall
+    // section resolved against its published INF the way an installation resolves it
+    // (SetupDiGetActualSectionToInstall: Install.NTamd64 where the INF has that section, else
+    // Install.NT, else Install). A device records that resolved name as its section (the driver
+    // key's InfSection on current builds; the capture appends InfSectionExt where a build keeps the
+    // extension apart), so whether a device is on the store's node is an exact comparison of names,
+    // not a guess at which part of a name is a decoration: "Install.NTLegacy.NTamd64" is not the
+    // node "Install" (OpenAI Codex R4), nor is a base section named "Install.NT" (follow-up review).
+    // The base name stands when Windows cannot say; the names then differ for a decorated device,
+    // which asks Windows to install, and the final check tells whether that changed anything.
+    // (Jericho, 2026-11-15.)
+    private static string ActualSectionOf(string inf, string section)
+    {
+        IntPtr handle = SetupOpenInfFileW(inf, null, InfStyleWin4, IntPtr.Zero);
+        if (handle == new IntPtr(-1) || handle == IntPtr.Zero) return section;
+        try
+        {
+            // Section names are at most 255 characters (MAX_INF_SECTION_NAME_LENGTH).
+            var resolved = new StringBuilder(512);
+            if (!SetupDiGetActualSectionToInstallW(handle, section, resolved, (uint)resolved.Capacity, out uint required, IntPtr.Zero) ||
+                required < 2 || required > resolved.Capacity) return section;
+            string name = resolved.ToString();
+            return name.Length == 0 ? section : name;
+        }
+        finally { SetupCloseInfFile(handle); }
     }
 
     // The catalog an INF names for this platform ([Version] CatalogFile, with its

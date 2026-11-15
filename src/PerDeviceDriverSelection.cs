@@ -152,54 +152,20 @@ internal static class PerDeviceDriverSelection
             bool tie = store.Rank == rank && store.Date == version.Date!.Value && store.Version == version.Version!.Value;
             bool installedPackage = !device.Unbound && string.Equals(Path.GetFileName(store.Inf), device.Inf, StringComparison.OrdinalIgnoreCase) &&
                 store.Date == installedDate && store.Version == installedVersion;
-            if (installedPackage && (storeBetter || tie) && SameSection(device.Section, store.Section)) return new(null, store.Rank < rank ? Outranked : NotNewer);
+            // Windows names a store node by its base DDInstall section and installs the section that
+            // name resolves to in its INF on this platform (store.ActualSection); a device records that
+            // resolved name (the driver key's InfSection, which already carries the decoration on
+            // current builds; the capture appends InfSectionExt where a build keeps it apart). So the
+            // device is on the store's node exactly when the names are equal, in any letter case: no
+            // guessing which part of a name is a decoration, which took "Install.NTLegacy.NTamd64"
+            // for the node "Install" (OpenAI Codex R4). A device whose section is unknown is taken to
+            // be on the store's node: nothing is installed then. The final check after a store install
+            // compares the same two names (FilteredDriverInstall), so a hand-off that left the device
+            // on another node of the same package is not taken as verified.
+            bool sameNode = device.Section is null || string.Equals(device.Section, store.ActualSection, StringComparison.OrdinalIgnoreCase);
+            if (installedPackage && (storeBetter || tie) && sameNode) return new(null, store.Rank < rank ? Outranked : NotNewer);
             return storeBetter ? new(null, StoreBetter, Store: store) : decision;
         }
-    }
-
-    // Windows names a store node by its base DDInstall section; a device records the decorated
-    // one it installed (InfSection + InfSectionExt, where the extension is a platform decoration).
-    // A base section may itself contain a period, even ".NT" ("Install.NTLegacy" beside "Install"
-    // in one INF), so only a remainder that is exactly one of Microsoft's documented decorations
-    // makes the two the same node: .NT, .NTx86, .NTia64, .NTamd64, .NTarm or .NTarm64, each
-    // optionally followed by the OS-version fields .[Major][.[Minor][.[ProductType][.[SuiteMask]
-    // [.[Build]]]]], every field empty or a number ("Install.NTamd64.10.0...22000"); case does not
-    // matter. A device whose section is unknown is taken to be on the store's node: nothing is
-    // installed then. The final check after a store install uses the same test
-    // (FilteredDriverInstall), so a hand-off that left the device on another node of the same
-    // package is not taken as verified.
-    internal static bool SameSection(string? installed, string store)
-    {
-        if (installed is null) return true;
-        if (!installed.StartsWith(store, StringComparison.OrdinalIgnoreCase)) return false;
-        var rest = installed.AsSpan(store.Length);
-        if (rest.IsEmpty) return true;
-        if (!rest.StartsWith(".NT", StringComparison.OrdinalIgnoreCase)) return false;
-        rest = rest[3..];
-        foreach (string architecture in PlatformArchitectures)
-        {
-            if (!rest.StartsWith(architecture, StringComparison.OrdinalIgnoreCase)) continue;
-            var versions = rest[architecture.Length..];
-            if (versions.IsEmpty || versions[0] == '.' && IsVersionDecoration(versions[1..])) return true;
-        }
-        return false;
-    }
-
-    private static readonly string[] PlatformArchitectures = { "", "x86", "ia64", "amd64", "arm", "arm64" };
-
-    // The OS-version fields of a decoration: period-separated, each empty or a decimal number, or a
-    // hexadecimal one with 0x (Microsoft writes the product type and suite mask so: "NTx86....0x80").
-    private static bool IsVersionDecoration(ReadOnlySpan<char> fields)
-    {
-        foreach (var range in fields.Split('.'))
-        {
-            var field = fields[range];
-            if (field.IsEmpty) continue;
-            bool hex = field.StartsWith("0x", StringComparison.OrdinalIgnoreCase);
-            var digits = hex ? field[2..] : field;
-            if (digits.IsEmpty || digits.IndexOfAnyExcept(hex ? "0123456789abcdefABCDEF" : "0123456789") >= 0) return false;
-        }
-        return true;
     }
 
     private static bool IsInstalledDriver(InfIndex.ModelEntry model, DriverDetection.InstalledDevice device, DateOnly installedDate, ulong installedVersion,
