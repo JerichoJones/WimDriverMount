@@ -154,7 +154,15 @@ internal static class DokanLifecycle
     internal static DokanInstaller.CheckResult PrepareCore(bool keep, IBackend backend)
     {
         State state = backend.Read();
-        int before = backend.ProductState();
+        // Windows PE has no Windows Installer, so msi.dll is not there to ask and the
+        // query cannot load. Dokan there was put in place by whoever built the image:
+        // it is used as found, never owned, never recorded for removal, and the run
+        // says so in one line. Jericho's decision, 2026-11-15. A normal Windows, with
+        // msi.dll, is unchanged.
+        bool noInstaller = false;
+        int before;
+        try { before = backend.ProductState(); }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException) { noInstaller = true; before = -1; }
         // Dokan we owned is gone -- uninstalled from Settings, or removed by us
         // before the record could be cleared. There is nothing left to own, so
         // the record goes and setup starts afresh; a fresh install reports any
@@ -169,6 +177,13 @@ internal static class DokanLifecycle
         if (!state.Exists && before != -1 && !backend.FilesPresent())
             throw new IOException("Windows lists Dokan as installed, but its files are missing. Uninstall Dokan in Settings > Apps, then run this again.");
         var result = backend.Ensure();
+        // Ensure has already refused when the files are missing, so this is a present
+        // Dokan; without Windows Installer there is no product to own or to remove.
+        if (noInstaller)
+        {
+            Console.WriteLine("Dokan is already present and will be left in place (there is no Windows Installer here to ask about it).");
+            return result;
+        }
         if (result.InstallerReportedSuccess)
         {
             if (before != -1 || backend.ProductState() != 5 || state.Exists)
