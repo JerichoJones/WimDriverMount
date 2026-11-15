@@ -231,8 +231,9 @@ internal static class PerDeviceDriverSelection
 
     // How to read the WIM's files by the paths its models carry (mount-style paths for
     // files inside the image, not on disk): one file's bytes, or null when unreadable or
-    // too large; and the catalogs in the same folder as an INF.
-    internal sealed record InfFiles(Func<string, byte[]?> Read, Func<string, IReadOnlyList<byte[]>> CatalogsBeside);
+    // too large; and the catalogs in the same folder as an INF, read one at a time as the
+    // caller enumerates them, so a folder of many catalogs is never held in memory at once.
+    internal sealed record InfFiles(Func<string, byte[]?> Read, Func<string, IEnumerable<byte[]>> CatalogsBeside);
 
     internal static InfFiles? FilesOf(DiscUtils.Wim.WimFileSystem? image, string? mount)
     {
@@ -259,8 +260,8 @@ internal static class PerDeviceDriverSelection
             try
             {
                 if (!path.StartsWith(mount, StringComparison.OrdinalIgnoreCase)) return [];
-                return image.GetFiles(Path.GetDirectoryName(Image(path)) ?? "\\", "*.cat", SearchOption.TopDirectoryOnly)
-                    .Select(ReadImage).Where(bytes => bytes is not null).Select(bytes => bytes!).ToArray();
+                return image.GetFiles(Path.GetDirectoryName(Image(path)) ?? "\\", "*.cat", SearchOption.TopDirectoryOnly).ToArray()
+                    .Select(ReadImage).Where(bytes => bytes is not null).Select(bytes => bytes!);
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { return []; }
         });
