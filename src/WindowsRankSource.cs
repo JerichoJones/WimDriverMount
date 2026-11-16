@@ -19,11 +19,18 @@ internal sealed class WindowsRankSource : IDisposable
     // WIM that names one large catalog from many INFs (stored once, so costing it
     // nothing) from filling the disk.
     private const long MaxInfBytes = 32L << 20, MaxCatalogBytes = 64L << 20, MaxRunBytes = 1L << 30;
-    // Each copy must leave this much free: as much again as a whole run can
-    // write, so staging never takes the drive below 1 GiB free, yet a small
-    // system drive with a couple of GiB free still ranks. (Capture's 5 GiB
+    // Each copy must leave a margin free: as much again as a whole run can
+    // write, so staging never takes a normal drive below 1 GiB free, yet a small
+    // system drive with a couple of GiB free still ranks. The margin is never
+    // more than an eighth of the drive, though: in Windows PE the system drive
+    // is the X: RAM disk, measured 534 MB free on x64 and ARM64 (2026-11-15),
+    // where a flat 1 GiB could never hold, so no WIM driver was ever ranked and
+    // every matched device was left undecided. An eighth of a 600 MB RAM disk is
+    // 75 MB, far above the few KB to few MB a copy writes; the per-file and
+    // per-run caps still hold, and a run that nears them on such a drive fails
+    // safe here or on a full disk, leaving the device undecided. (Capture's 5 GiB
     // margin is sized for writing a WIM, not a few KB of INF and catalog.)
-    private const long FreeAfterCopy = MaxRunBytes;
+    internal static long FreeAfterCopy(long driveTotalBytes) => Math.Min(MaxRunBytes, driveTotalBytes / 8);
     internal const string FolderPrefix = "WimDriverMount-rank-";
     private readonly WimFileSystem image;
     private readonly string mount;
@@ -178,7 +185,8 @@ internal sealed class WindowsRankSource : IDisposable
         long length = image.GetFileLength(imagePath);
         if (length > maxBytes) throw new InvalidDataException("File is too large to rank.");
         if (copied + length > MaxRunBytes) throw new InvalidDataException("Too much has been copied to rank drivers in this run.");
-        if (new DriveInfo(Path.GetPathRoot(destination)!).AvailableFreeSpace < length + FreeAfterCopy)
+        var drive = new DriveInfo(Path.GetPathRoot(destination)!);
+        if (drive.AvailableFreeSpace < length + FreeAfterCopy(drive.TotalSize))
             throw new IOException("Not enough free space to rank drivers.");
         copied += length;
         using var source = image.OpenFile(imagePath, FileMode.Open, FileAccess.Read);
