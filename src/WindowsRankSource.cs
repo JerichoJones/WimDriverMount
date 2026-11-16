@@ -31,6 +31,10 @@ internal sealed class WindowsRankSource : IDisposable
     // safe here or on a full disk, leaving the device undecided. (Capture's 5 GiB
     // margin is sized for writing a WIM, not a few KB of INF and catalog.)
     internal static long FreeAfterCopy(long driveTotalBytes) => Math.Min(MaxRunBytes, driveTotalBytes / 8);
+    // The decision Copy makes with the drive's figures, kept pure so the rule is
+    // checked where it is applied (review of the margin, 2026-11-15), not only
+    // the margin on its own.
+    internal static bool HasRoom(long availableBytes, long driveTotalBytes, long length) => availableBytes >= length + FreeAfterCopy(driveTotalBytes);
     internal const string FolderPrefix = "WimDriverMount-rank-";
     private readonly WimFileSystem image;
     private readonly string mount;
@@ -186,8 +190,7 @@ internal sealed class WindowsRankSource : IDisposable
         if (length > maxBytes) throw new InvalidDataException("File is too large to rank.");
         if (copied + length > MaxRunBytes) throw new InvalidDataException("Too much has been copied to rank drivers in this run.");
         var drive = new DriveInfo(Path.GetPathRoot(destination)!);
-        if (drive.AvailableFreeSpace < length + FreeAfterCopy(drive.TotalSize))
-            throw new IOException("Not enough free space to rank drivers.");
+        if (!HasRoom(drive.AvailableFreeSpace, drive.TotalSize, length)) throw new IOException("Not enough free space to rank drivers.");
         copied += length;
         using var source = image.OpenFile(imagePath, FileMode.Open, FileAccess.Read);
         var handle = TrustedFile.OpenFileW(destination, GenericWrite, 0, IntPtr.Zero, CreateNew, OpenReparsePoint, IntPtr.Zero);
