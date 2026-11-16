@@ -2,7 +2,7 @@
 
 # WIM Driver Mount
 
-Version 0.10.1 · Jericho Jones · MIT (third-party notices in `licenses`).
+Version 0.10.2 · Jericho Jones · MIT (third-party notices in `licenses`).
 
 WIM Driver Mount mounts a WIM image as a read-only drive, without extracting it. The WIM can be on a local disk, a network share, or an HTTP/HTTPS server.
 
@@ -22,6 +22,7 @@ That makes it useful after a machine is already running:
 
 **The program** is `WimDriverMount.exe`.
 - It is self-contained: copy the folder anywhere. No .NET installation needed.
+- As of 0.10.2 it runs in Windows PE too, once Dokan's files are placed in the image: verified in x64 and ARM64 test images. See [Using it in Windows PE](#using-it-in-windows-pe).
 - Run it with no arguments, or with `--help`, for a short guide.
 - It runs as administrator. On a shared PC, keep it in a folder only administrators can write (under Program Files, say). It warns when its folder is not.
 - `--install` puts it there for you and adds a right-click Mount to File Explorer.
@@ -39,6 +40,7 @@ That makes it useful after a machine is already running:
 | Let other accounts on this PC open the drive | add `--all-users` | [Mount a WIM as a drive](#mount-a-wim-as-a-drive) |
 | Run an installer or tool that lives in a WIM | `--run` | [Run a program](#run-a-program-from-a-wim) |
 | Do the same mounts on many machines | a settings file, `--mount-config` | [Settings file](#run-the-same-mounts-every-time) |
+| Add drivers to a Windows you are deploying, from Windows PE | `--no-install-dokan`, then DISM from the drive | [Windows PE](#using-it-in-windows-pe) |
 | Clean up after something went wrong | `--unmount`, `--resume-worker-cleanup` | [If something went wrong](#if-something-went-wrong) |
 
 ## Install drivers from a WIM
@@ -521,6 +523,75 @@ It refuses:
 - a drive root; anything inside Windows or Program Files; ProgramData, Temp and your AppData folders themselves; a user profile, or any folder directly in one (`C:\Users\<name>\Config` too)
 - a folder that holds other folders
 
+## Using it in Windows PE
+
+As of 0.10.2, WIM Driver Mount runs in Windows PE, the small Windows that deployment media boots into. It is one self-contained program, needs no .NET, and Windows PE already runs everything as SYSTEM, so there is no administrator prompt. Two things differ from a full Windows:
+
+1. **Windows PE has no Windows Installer**, so the program cannot install Dokan there. Put the Dokan 2.3 or later files into the image yourself (below) and always pass `--no-install-dokan`. The program then uses the files as it finds them, records nothing about them, and never tries to remove them. If they are missing, it stops and names them. If the image somehow carries a Dokan ownership record from a full Windows, it refuses and changes nothing. Files older than 2.3 are refused with a message written for a full Windows ("uninstall Dokan in Settings > Apps"); in Windows PE, replace the files in the image instead.
+2. **The Dokan driver must be loaded by the kernel**, not by the Service Control Manager, because Windows PE does not start the auto-start services a full Windows does. Registered with Start = 2 (automatic), the way a Dokan install registers it, the driver stayed stopped in the test runs. Registered with Start = 1 (system start), the kernel loads it during system initialization, as it loads Windows' own Npfs and Msfs drivers, and in the test runs it was loaded before `startnet.cmd` ran.
+
+### What to add to the image
+
+With the Windows PE image mounted at `C:\mount` (`Dism /Mount-Image …` or `Mount-WindowsImage`), in an administrator PowerShell window:
+
+```powershell
+# 1. Dokan 2.3.1's files, for the image's architecture: extract them from Dokan_x64.msi or Dokan_ARM64.msi
+#    (beside WimDriverMount.exe) with  msiexec /a <the .msi> TARGETDIR=<a folder>
+Copy-Item dokan2.sys C:\mount\Windows\System32\drivers\
+Copy-Item dokan2.dll, dokanctl.exe C:\mount\Windows\System32\
+
+# 2. The driver service, offline: the values of a real Dokan install, except Start = 1 (system start).
+#    Use the control set that the loaded hive's Select\Current value names (ControlSet001 here).
+reg load HKLM\PE C:\mount\Windows\System32\config\SYSTEM
+reg add HKLM\PE\ControlSet001\Services\dokan2 /v DisplayName /t REG_SZ /d Dokan2 /f
+reg add HKLM\PE\ControlSet001\Services\dokan2 /v Type /t REG_DWORD /d 2 /f
+reg add HKLM\PE\ControlSet001\Services\dokan2 /v Start /t REG_DWORD /d 1 /f
+reg add HKLM\PE\ControlSet001\Services\dokan2 /v ErrorControl /t REG_DWORD /d 0 /f
+reg add HKLM\PE\ControlSet001\Services\dokan2 /v ImagePath /t REG_EXPAND_SZ /d \SystemRoot\system32\drivers\dokan2.sys /f
+reg unload HKLM\PE
+
+# 3. The program, with its licenses folder
+Copy-Item -Recurse WimDriverMount C:\mount\WimDriverMount
+```
+
+- No Visual C++ runtime is needed: Dokan 2.3.1's `dokan2.dll` and `dokanctl.exe` import only Windows' own libraries (checked from their import tables, x64 and ARM64).
+- The test images also carried Dokan's network-provider DLL (`dokannp2.dll`) and the service's `NetworkProvider` subkey. The program does not use them; they are not needed for the steps above.
+
+Then, in Windows PE, with the Windows you are deploying at `W:` and the driver WIM at `D:`:
+
+```
+X:\WimDriverMount\WimDriverMount.exe --wim D:\Drivers\Dell.wim --drive M: --background --no-install-dokan --no-pause
+dism /Image:W:\ /Add-Driver /Driver:M:\ /Recurse /ScratchDir:W:\Scratch
+X:\WimDriverMount\WimDriverMount.exe --unmount M: --no-pause
+```
+
+DISM reads the INFs and driver files straight from the mounted drive. Nothing is extracted first, and no scratch space is needed for the driver set.
+
+`--preview-drivers` and `--install-drivers` work in Windows PE too, against Windows PE's own devices: for example, to bring up a storage or network device from a driver WIM before the deployment continues.
+
+### Notes from the test runs
+
+- Do not pass `--evtlog`: Windows PE has no Event Log service.
+- The program lives on `X:`, a RAM disk every process can write to, so it prints its "folder is changeable" warning on every run. It is a warning only.
+- Base images: both the ADK's Windows PE and the Windows ISO's `sources\boot.wim` work. From the ISO's `boot.wim`, use **index 2** (Windows Setup) and rename `\setup.exe` at the image root, so that `startnet.cmd` runs instead of Setup. Index 1 cannot run offline servicing: every `dism /Image:…` session there, even a plain `/Get-Drivers`, failed with "No such interface supported", with the ADK's DISM as well as the in-box one. Export the image with `-Setbootable`, and build the media with `efisys_noprompt.bin` if nobody will be there to press a key.
+- DISM runs the servicing stack of the **target** image, so the Windows PE build must be at least the target's build (Microsoft's "DISM Supported Platforms"). The ISO's `boot.wim` (build 26100) could not service the `install.wim` next to it (build 26200). Use the ADK's DISM from a folder in the image (Microsoft's "Use a newer version of DISM"), or a Windows PE from the ADK that matches the target.
+- A driver WIM made by copying in-box packages out of a Windows `DriverStore` carries no catalog for them (in-box INFs are covered by Windows' own catalogs), so offered from a WIM they are unsigned, and Windows refuses to install them (0xE000022F). The run reports each refusal; it does not work around it.
+- Windows PE's command-line tooling is thin: no `sc`, `findstr`, `certutil`, `timeout` or `where` (`net`, `ping`, `reg`, `dism`, `driverquery`, `mountvol` and `robocopy` are there). Batch files must have CRLF line endings; LF-only files stopped at their first pipeline.
+
+### What was verified
+
+Measured on 2026-11-15, with test builds of the code released as 0.10.2, in both cases from the Windows 11 ISO's own `boot.wim` (index 2) with Dokan 2.3.1, the program and the ADK's DISM added as above (the ARM64 image also got the VM's virtio drivers).
+
+| | x64 | ARM64 |
+|---|---|---|
+| Test machines | A Hyper-V Gen2 VM and a VMware Workstation 17 VM, both with Secure Boot. The driver install ran only on the VMware VM: the Hyper-V VM exposes no device that has a WHQL third-party driver | A QEMU 8.2 VM with Secure Boot firmware, virtio storage and network |
+| Dokan driver loaded at boot, before anything started it | yes | yes |
+| Mount, read, unmount | exit 0; the whole drive copied off with robocopy, 223 files / 267 MB, every file SHA-256-identical to the source WIM; unmount exit 0, letter released, nothing left behind | the same, 223 of 223 identical |
+| `dism /Add-Driver /Recurse` from the mounted drive into an offline Windows | 31 packages installed, exit 0 | 31 packages installed, exit 0 |
+| `--preview-drivers`, then `--install-drivers`, with drivers the VM needs | 8 INSTALL previewed; 8 WHQL VMware Tools drivers installed (exit 3010, restart required); 8 KEEP afterwards, and a second install run installed nothing | 2 INSTALL previewed; 2 WHQL virtio drivers (serial, RNG) installed; 2 KEEP afterwards, and a second install run installed nothing |
+
+That is what was measured on those machines; a different Windows PE build or base image is not covered by it.
+
 ## If something went wrong
 
 | What you see | Do this |
@@ -579,7 +650,7 @@ The first mount installs Dokan, from the first of these that applies:
 3. `Dokan_x64.msi` (`Dokan_ARM64.msi` on ARM64) beside `WimDriverMount.exe`.
 4. The latest official release, downloaded from GitHub.
 
-`--no-install-dokan` refuses to install at all.
+`--no-install-dokan` refuses to install at all. Windows PE always needs it: see [Using it in Windows PE](#using-it-in-windows-pe).
 
 ### What is checked
 
